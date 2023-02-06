@@ -13,14 +13,11 @@ pub trait SoftDeletable {
     type DeletedAt: Default + Column<SqlType = Nullable<Timestamp>> + ExpressionMethods;
 }
 
-pub trait DeletableFilter<'a, C: AsyncConnection, T> =
-    LoadQuery<'a, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'a;
-
-pub trait IsDeleted<'a, C, S, T>: DeletableFilter<'a, C, T> + Sized + 'a
+pub trait IsDeleted<'query, C, S, T>: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + Sized + 'query
 where
     C: AsyncConnection,
 {
-    type IsDeletedFilter: DeletableFilter<'a, C, T> + From<Self> = Self;
+    type IsDeletedFilter: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query + From<Self> = Self;
 
     #[allow(clippy::wrong_self_convention)]
     fn is_deleted(self) -> Self::IsDeletedFilter {
@@ -28,11 +25,11 @@ where
     }
 }
 
-pub trait IsNotDeleted<'a, C, S, T>: DeletableFilter<'a, C, T> + Sized + 'a
+pub trait IsNotDeleted<'query, C, S, T>: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + Sized + 'query
 where
     C: AsyncConnection,
 {
-    type IsNotDeletedFilter: DeletableFilter<'a, C, T> + From<Self> = Self;
+    type IsNotDeletedFilter: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query + From<Self> = Self;
 
     #[allow(clippy::wrong_self_convention)]
     fn is_not_deleted(self) -> Self::IsNotDeletedFilter {
@@ -40,9 +37,9 @@ where
     }
 }
 
-impl<'a, Q, C, S, T> IsDeleted<'a, C, S, T> for Q
+impl<'query, Q, C, S, T> IsDeleted<'query, C, S, T> for Q
 where
-    Q: DeletableFilter<'a, C, T>,
+    Q: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
     C: AsyncConnection,
 {
     default type IsDeletedFilter = Self;
@@ -51,9 +48,9 @@ where
     }
 }
 
-impl<'a, Q, C, S, T> IsNotDeleted<'a, C, S, T> for Q
+impl<'query, Q, C, S, T> IsNotDeleted<'query, C, S, T> for Q
 where
-    Q: DeletableFilter<'a, C, T>,
+    Q: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
     C: AsyncConnection,
 {
     default type IsNotDeletedFilter = Self;
@@ -62,47 +59,47 @@ where
     }
 }
 
-impl<'a, Q, C, S, T> IsDeleted<'a, C, S, T> for Q
+impl<'query, Q, C, S, T> IsDeleted<'query, C, S, T> for Q
 where
-    Q: DeletableFilter<'a, C, T> + FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>>,
+    Q: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query + FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>>,
     C: AsyncConnection,
     S: SoftDeletable,
-    IsDeletedFilter<'a, Q, S>: DeletableFilter<'a, C, T> + 'a,
+    IsDeletedFilter<'query, Q, S>: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
 {
-    type IsDeletedFilter = IsDeletedFilter<'a, Q, S>;
+    type IsDeletedFilter = IsDeletedFilter<'query, Q, S>;
 }
 
-impl<'a, Q, C, S, T> IsNotDeleted<'a, C, S, T> for Q
+impl<'query, Q, C, S, T> IsNotDeleted<'query, C, S, T> for Q
 where
-    Q: DeletableFilter<'a, C, T> + FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>>,
+    Q: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query + FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>>,
     C: AsyncConnection,
     S: SoftDeletable,
-    IsNotDeletedFilter<'a, Q, S>: DeletableFilter<'a, C, T> + 'a,
+    IsNotDeletedFilter<'query, Q, S>: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
 {
-    type IsNotDeletedFilter = IsNotDeletedFilter<'a, Q, S>;
+    type IsNotDeletedFilter = IsNotDeletedFilter<'query, Q, S>;
 }
 
-pub struct IsDeletedFilter<'a, Q, S>(
+pub struct IsDeletedFilter<'query, Q, S>(
     Filter<Q, IsNotNull<<S as SoftDeletable>::DeletedAt>>,
     PhantomData<S>,
-    PhantomData<&'a ()>,
+    PhantomData<&'query ()>,
 )
 where
     S: SoftDeletable,
     Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>>,
-    Filter<Q, IsNotNull<<S as SoftDeletable>::DeletedAt>>: 'a,
-    Self: 'a;
+    Filter<Q, IsNotNull<<S as SoftDeletable>::DeletedAt>>: 'query,
+    Self: 'query;
 
-pub struct IsNotDeletedFilter<'a, Q, S>(
+pub struct IsNotDeletedFilter<'query, Q, S>(
     Filter<Q, IsNull<<S as SoftDeletable>::DeletedAt>>,
     PhantomData<S>,
-    PhantomData<&'a ()>,
+    PhantomData<&'query ()>,
 )
 where
     S: SoftDeletable,
     Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>>,
-    Filter<Q, IsNull<<S as SoftDeletable>::DeletedAt>>: 'a,
-    Self: 'a;
+    Filter<Q, IsNull<<S as SoftDeletable>::DeletedAt>>: 'query,
+    Self: 'query;
 
 impl<Q, S> From<Q> for IsDeletedFilter<'_, Q, S>
 where
@@ -276,28 +273,28 @@ impl<
 }
 
 impl<
-        'a,
+        'query,
         DB,
-        F: BoxedDsl<'a, DB>,
+        F: BoxedDsl<'query, DB>,
         S: SoftDeletable,
         Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > BoxedDsl<'a, DB> for IsDeletedFilter<'_, Q, S>
+    > BoxedDsl<'query, DB> for IsDeletedFilter<'_, Q, S>
 {
-    type Output = <F as BoxedDsl<'a, DB>>::Output;
-    fn internal_into_boxed(self) -> IntoBoxed<'a, Self, DB> {
+    type Output = <F as BoxedDsl<'query, DB>>::Output;
+    fn internal_into_boxed(self) -> IntoBoxed<'query, Self, DB> {
         self.0.internal_into_boxed()
     }
 }
 impl<
-        'a,
+        'query,
         DB,
-        F: BoxedDsl<'a, DB>,
+        F: BoxedDsl<'query, DB>,
         S: SoftDeletable,
         Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > BoxedDsl<'a, DB> for IsNotDeletedFilter<'_, Q, S>
+    > BoxedDsl<'query, DB> for IsNotDeletedFilter<'_, Q, S>
 {
-    type Output = <F as BoxedDsl<'a, DB>>::Output;
-    fn internal_into_boxed(self) -> IntoBoxed<'a, Self, DB> {
+    type Output = <F as BoxedDsl<'query, DB>>::Output;
+    fn internal_into_boxed(self) -> IntoBoxed<'query, Self, DB> {
         self.0.internal_into_boxed()
     }
 }

@@ -8,6 +8,7 @@ authors.workspace = true
 anyhow.workspace = true
 async-backtrace.workspace = true
 async-trait.workspace = true
+cfg-if.workspace = true
 deadpool.workspace = true
 derivative.workspace = true
 derive_more.workspace = true

@@ -4,11 +4,15 @@ use diesel::{migration::MigrationConnection, Connection};
 use diesel_async::AsyncConnection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness};
 use std::sync::Arc;
+use typed_builder::TypedBuilder;
 
-#[cfg(any(feature = "deadpool", feature = "bb8", feature = "mobc"))]
-use diesel_async::pooled_connection::{
-    deadpool::Pool, AsyncDieselConnectionManager, PoolableConnection,
-};
+use diesel_async::pooled_connection::{AsyncDieselConnectionManager, PoolableConnection};
+
+#[cfg(feature = "deadpool")]
+use diesel_async::pooled_connection::deadpool::Pool;
+
+#[cfg(feature = "bb8")]
+use diesel_async::pooled_connection::bb8::Pool;
 
 /// _DbPool wraps a deadpool diesel connection pool.
 /// It is prefixed with a _ to allow convenient type aliasing in applicatins
@@ -68,11 +72,24 @@ impl<C: AsyncConnection + PoolableConnection + AsyncSyncConnectionBridge + 'stat
         info!("connecting to database");
 
         let db_pool = Self(Arc::new({
-            let mut pool_builder = Pool::builder(AsyncDieselConnectionManager::new(&database_url));
-            if let Some(max_connections) = max_connections {
-                pool_builder = pool_builder.max_size(max_connections);
+            cfg_if! {
+                if #[cfg(feature = "deadpool")] {
+                    let mut pool_builder = Pool::builder(AsyncDieselConnectionManager::new(&database_url));
+                    if let Some(max_connections) = max_connections {
+                        pool_builder = pool_builder.max_size(max_connections);
+                    }
+                    pool_builder.build().map_err(Error::msg)?
+                }
             }
-            pool_builder.build().map_err(Error::msg)?
+            cfg_if! {
+                if #[cfg(feature = "bb8")] {
+                    let mut pool_builder = Pool::builder();
+                    if let Some(max_connections) = max_connections {
+                        pool_builder = pool_builder.max_size(max_connections as u32);
+                    }
+                    pool_builder.build(AsyncDieselConnectionManager::new(&database_url)).await.map_err(Error::msg)?
+                }
+            }
         }));
         db_pool.ping().await?;
 
@@ -115,12 +132,12 @@ impl<C: AsyncConnection + PoolableConnection + AsyncSyncConnectionBridge + 'stat
     /// let db_pool = DbPool::new(...).await?;
     /// let results = a_diesel_table::table.select((a_diesel_table::column)).get_results(lock_conn!(db_pool)).await?;
     /// ```
-    pub(crate) async fn get_connection(&self) -> Result<DbConnOwned<C>, anyhow::Error> {
+    pub(crate) async fn get_connection(&self) -> Result<DbConnOwned<C>, diesel::result::Error> {
         let connection = self
             .0
             .get()
             .await
-            .map_err(|err| Error::msg(format!("could not get db pool connection: {err}")))?;
+            .map_err(|err| diesel::result::Error::QueryBuilderError(format!("could not get pooled connection to database: {err}").into()))?;
         Ok(DbConnection::from(connection))
     }
 }

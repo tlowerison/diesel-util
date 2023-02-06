@@ -14,6 +14,7 @@ authors = ["Trey Lowerison"]
 anyhow = "1"
 async-backtrace = "0.2"
 async-trait = "0.1"
+cfg-if = "1"
 convert_case = "0.6"
 deadpool = "0.9"
 derivative = "2"

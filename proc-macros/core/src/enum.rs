@@ -182,3 +182,22 @@ pub fn derive_enum(item: TokenStream) -> Result<TokenStream, Error> {
 
     Ok(tokens)
 }
+
+#[cfg(tests)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_uuid_id() -> Result<(), Error> {
+        derive_enum(quote!(
+            pub enum Food {
+                #[id = "94ba028b-b74b-4af4-8495-de7f468ffc76"]
+                Carbs,
+                #[id = "8cacc7ff-c52e-4193-ab2f-758089c1ccc6"]
+                Ramen,
+            }
+        ))?;
+
+        Ok(())
+    }
+}

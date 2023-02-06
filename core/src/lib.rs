@@ -6,6 +6,8 @@ extern crate async_backtrace;
 #[macro_use]
 extern crate async_trait;
 #[macro_use]
+extern crate cfg_if;
+#[macro_use]
 extern crate derivative;
 #[macro_use]
 extern crate derive_more;
@@ -15,34 +17,29 @@ pub extern crate lazy_static;
 extern crate serde;
 #[macro_use]
 extern crate tracing;
-#[macro_use]
-extern crate typed_builder;
 
 mod connection;
-mod db_pool;
 mod delete;
 mod error;
 mod macros;
-mod operations;
+// mod operations;
 mod paginate;
 mod schema;
+mod scoped;
 
 pub use connection::*;
-pub use db_pool::*;
 pub use delete::*;
 pub use diesel_util_proc_macros::*;
 pub use error::*;
 pub use macros::*;
-pub use operations::*;
+// pub use operations::*;
 pub use paginate::*;
 pub use schema::*;
+pub use scoped::*;
 
-pub use anyhow;
-pub use async_trait::async_trait as diesel_util_async_trait;
-pub use derivative::Derivative as DieselUtilDerivative;
-pub use diesel;
-pub use paste::paste;
-pub use scoped_futures;
-pub use serde_json;
-pub use tokio;
-pub use uuid;
+cfg_if! {
+    if #[cfg(any(feature = "deadpool", feature = "bb8", feature = "mobc"))] {
+        mod db_pool;
+        pub use db_pool::*;
+    }
+}

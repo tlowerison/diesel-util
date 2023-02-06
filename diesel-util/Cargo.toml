@@ -1,0 +1,16 @@
+[package]
+name = "diesel-util"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+core = { path = "../core", package = "diesel-util-core" }
+proc-macros = { path = "../proc-macros", package = "diesel-util-proc-macros" }
+
+[features]
+bb8 = ["core/bb8"]
+deadpool = ["core/deadpool"]
+mobc = ["core/mobc"]
+mysql = ["core/mysql"]
+postgres = ["core/postgres"]

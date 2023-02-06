@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub trait SqlUuidEnum: Clone + Sized {
+pub trait Enum: Clone + Sized {
     type Variants: Iterator<Item = Self>;
     fn id(&self) -> Uuid;
     fn variants() -> Self::Variants;

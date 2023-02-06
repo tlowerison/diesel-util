@@ -56,33 +56,13 @@ impl<AC, C> Clone for DbConnection<AC, C> {
     }
 }
 
-pub type DbConnRef<'a, AC> = DbConnection<AC, &'a mut AC>;
-
-cfg_if! {
-    if #[cfg(feature = "deadpool")] {
-        use diesel_async::pooled_connection::deadpool::Object;
-
-        type PooledConnection<'a, C> = Object<C>;
-
-        pub type DbConnOwned<'r, AC> = DbConnection<AC, Object<AC>>;
-
-        impl<C: PoolableConnection + 'static> From<Object<C>> for DbConnOwned<'_, C> {
-            fn from(connection: Object<C>) -> Self {
-                DbConnection {
-                    tx_id: None,
-                    connection: Arc::new(RwLock::new(connection)),
-                    tx_cleanup: Arc::new(Mutex::new(vec![])),
-                }
-            }
-        }
-    }
-}
+pub type DbConnRef<'a, C> = DbConnection<C, &'a mut C>;
 
 cfg_if! {
     if #[cfg(feature = "bb8")] {
         use diesel_async::pooled_connection::bb8::PooledConnection;
 
-        pub type DbConnOwned<'r, AC> = DbConnection<AC, PooledConnection<'r, AC>>;
+        pub type DbConnOwned<'r, C> = DbConnection<C, PooledConnection<'r, C>>;
 
         impl<'a, C: PoolableConnection + 'static> From<PooledConnection<'a, C>> for DbConnOwned<'a, C> {
             fn from(connection: PooledConnection<'a, C>) -> Self {
@@ -97,13 +77,50 @@ cfg_if! {
 }
 
 cfg_if! {
-    if #[cfg(any(feature = "deadpool", feature = "bb8", feature = "mobc"))] {
+    if #[cfg(feature = "deadpool")] {
+        use diesel_async::pooled_connection::deadpool::Object;
+
+        type PooledConnection<'a, C> = Object<C>;
+        pub type DbConnOwned<'r, C> = DbConnection<C, Object<C>>;
+
+        impl<'a, C: PoolableConnection + 'static> From<PooledConnection<'a, C>> for DbConnOwned<'a, C> {
+            fn from(connection: PooledConnection<'a, C>) -> Self {
+                DbConnection {
+                    tx_id: None,
+                    connection: Arc::new(RwLock::new(connection)),
+                    tx_cleanup: Arc::new(Mutex::new(vec![])),
+                }
+            }
+        }
+
+    }
+}
+
+cfg_if! {
+    if #[cfg(feature = "mobc")] {
+        use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+        use mobc::Connection;
+
+        type PooledConnection<'a, C> = Connection<AsyncDieselConnectionManager<C>>;
+        pub type DbConnOwned<'r, C> = DbConnection<C, Connection<AsyncDieselConnectionManager<C>>>;
+
+        impl<'a, C: PoolableConnection + mobc::Manager + 'static> From<PooledConnection<'a, C>> for DbConnOwned<'a, C> {
+            fn from(connection: PooledConnection<'a, C>) -> Self {
+                DbConnection {
+                    tx_id: None,
+                    connection: Arc::new(RwLock::new(connection)),
+                    tx_cleanup: Arc::new(Mutex::new(vec![])),
+                }
+            }
+        }
+    }
+}
+
+cfg_if! {
+    if #[cfg(any(feature = "bb8", feature = "deadpool", feature = "mobc"))] {
         use crate::db_pool::*;
         use diesel_async::pooled_connection::PoolableConnection;
         use std::ops::DerefMut;
-
-        pub trait DieselUtilAsyncConnection =
-            AsyncConnection + AsyncSyncConnectionBridge + PoolableConnection;
     }
 }
 
@@ -189,6 +206,14 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a;
 
+    async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a;
+
     fn tx_id(&self) -> Option<Uuid>;
 
     async fn tx_cleanup<F, E>(&self, f: F)
@@ -209,7 +234,10 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             + Send
             + 'a,
         E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a;
+        T: Send + 'a
+    {
+        self.with_tx_connection(callback).await
+    }
 
     #[framed]
     #[instrument(skip_all)]
@@ -678,6 +706,17 @@ impl<'d, D: _Db + Clone> _Db for Cow<'d, D> {
         (**self).with_connection(f).await
     }
 
+    async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a,
+    {
+        (**self).with_tx_connection(f).await
+    }
+
     fn tx_id(&self) -> Option<Uuid> {
         (**self).tx_id()
     }
@@ -699,17 +738,6 @@ impl<'d, D: _Db + Clone> _Db for Cow<'d, D> {
         'life0: 'a,
     {
         (**self).tx(callback).await
-    }
-
-    async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-    {
-        (**self).raw_tx(callback).await
     }
 }
 
@@ -731,6 +759,17 @@ impl<'d, D: _Db + Clone> _Db for &'d D {
         (**self).with_connection(f).await
     }
 
+    async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a,
+    {
+        (**self).with_tx_connection(f).await
+    }
+
     fn tx_id(&self) -> Option<Uuid> {
         (**self).tx_id()
     }
@@ -753,21 +792,10 @@ impl<'d, D: _Db + Clone> _Db for &'d D {
     {
         (**self).tx(callback).await
     }
-
-    async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-    {
-        (**self).raw_tx(callback).await
-    }
 }
 
 cfg_if! {
-    if #[cfg(any(feature = "deadpool", feature = "bb8"))] {
+    if #[cfg(any(feature = "bb8", feature = "deadpool", feature = "mobc"))] {
         #[async_trait]
         impl<'d, C> _Db for DbConnOwned<'d, C>
         where
@@ -777,7 +805,6 @@ cfg_if! {
             type AsyncConnection = C;
             type Connection<'r> = PooledConnection<'r, C> where Self: 'r;
             type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
-
 
             async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
             where
@@ -789,6 +816,19 @@ cfg_if! {
             {
                 let mut connection = self.connection.write().await;
                 f(connection.deref_mut().deref_mut()).await
+            }
+
+            async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let mut connection = self.connection.write().await;
+                let connection = connection.deref_mut().deref_mut();
+                connection.transaction(f).await
             }
 
             fn tx_id(&self) -> Option<Uuid> {
@@ -814,7 +854,7 @@ cfg_if! {
                 'life0: 'a,
             {
                 let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
-                self.with_connection(move |conn| conn.transaction(move |mut conn| async move {
+                self.with_tx_connection(move |mut conn| async move {
                     let db_connection = DbConnection {
                         tx_id: Some(Uuid::new_v4()),
                         connection: Arc::new(RwLock::new(conn.deref_mut())),
@@ -826,7 +866,7 @@ cfg_if! {
                         tx_cleanup_fn(&db_connection).await?;
                     }
                     Ok::<T, E>(value)
-                }.scope_boxed()).scope_boxed()).await
+                }.scope_boxed()).await
             }
 
             #[framed]
@@ -840,28 +880,29 @@ cfg_if! {
             {
                 let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
                 #[allow(unused_mut)]
-                self.with_connection(move |conn| conn.transaction(move |mut conn| async move {
-                            let value = callback(conn).await?;
+                self.with_tx_connection(move |mut conn| async move {
+                    let value = callback(conn).await?;
 
-                            #[cfg(feature = "deadpool")]
-                            let connection = Arc::new(RwLock::new(conn));
-                            #[cfg(feature = "bb8")]
-                            let connection = Arc::new(RwLock::new(conn.deref_mut()));
+                    #[cfg(feature = "bb8")]
+                    let connection = Arc::new(RwLock::new(conn.deref_mut()));
 
-                            let db_connection = DbConnection {
-                                tx_id: Some(Uuid::new_v4()),
-                                tx_cleanup: tx_cleanup.clone(),
-                                connection,
-                            };
-                            let mut tx_cleanup = tx_cleanup.lock().await;
-                            for tx_cleanup_fn in tx_cleanup.drain(..) {
-                                tx_cleanup_fn(&db_connection).await?;
-                            }
-                            Ok(value)
-                        }
-                        .scope_boxed()
-                    ).scope_boxed())
-                    .await
+                    #[cfg(feature = "deadpool")]
+                    let connection = Arc::new(RwLock::new(conn));
+
+                    #[cfg(feature = "mobc")]
+                    let connection = Arc::new(RwLock::new(conn.deref_mut()));
+
+                    let db_connection = DbConnection {
+                        tx_id: Some(Uuid::new_v4()),
+                        tx_cleanup: tx_cleanup.clone(),
+                        connection,
+                    };
+                    let mut tx_cleanup = tx_cleanup.lock().await;
+                    for tx_cleanup_fn in tx_cleanup.drain(..) {
+                        tx_cleanup_fn(&db_connection).await?;
+                    }
+                    Ok(value)
+                }.scope_boxed()).await
             }
         }
 
@@ -887,6 +928,19 @@ cfg_if! {
                 f(connection.deref_mut().deref_mut()).await
             }
 
+            async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let mut connection = self.connection.write().await;
+                let connection = connection.deref_mut().deref_mut();
+                connection.transaction(f).await
+            }
+
             fn tx_id(&self) -> Option<Uuid> {
                 self.tx_id
             }
@@ -910,16 +964,15 @@ cfg_if! {
             {
                 let tx_id = self.tx_id;
                 let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
-                self.with_connection(move |conn| conn.transaction(move |conn| {
-                        let db_connection = DbConnection {
-                            connection: Arc::new(RwLock::new(conn)),
-                            tx_cleanup: tx_cleanup.clone(),
-                            tx_id,
-                        };
-                        callback.call_tx_fn(Cow::Owned(db_connection)).scope_boxed()
-                    })
-                    .scope_boxed())
-                    .await
+                self.with_tx_connection(move |conn| {
+                    let db_connection = DbConnection {
+                        connection: Arc::new(RwLock::new(conn)),
+                        tx_cleanup: tx_cleanup.clone(),
+                        tx_id,
+                    };
+                    callback.call_tx_fn(Cow::Owned(db_connection)).scope_boxed()
+                })
+                .await
             }
 
             #[framed]
@@ -931,14 +984,14 @@ cfg_if! {
                 E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
                 T: Send + 'a,
             {
-                self.with_connection(move |conn| conn.transaction(move |conn| callback(conn).scope_boxed()).scope_boxed()).await
+                self.with_tx_connection(move |conn| callback(conn).scope_boxed()).await
             }
         }
 
         #[async_trait]
         impl<C> _Db for _DbPool<C>
         where
-            C: AsyncConnection + AsyncSyncConnectionBridge + PoolableConnection + Sync + 'static,
+            C: AsyncSyncConnectionBridge + Sync + 'static,
         {
             type Backend = <C as AsyncConnection>::Backend;
             type AsyncConnection = C;
@@ -956,6 +1009,20 @@ cfg_if! {
                 let connection = self.get_connection().await?;
                 let mut connection = connection.write().await;
                 f(connection.deref_mut().deref_mut()).await
+            }
+
+            async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let connection = self.get_connection().await?;
+                let mut connection = connection.write().await;
+                let connection = connection.deref_mut().deref_mut();
+                connection.transaction(f).await
             }
 
             fn tx_id(&self) -> Option<Uuid> {
@@ -1007,33 +1074,30 @@ cfg_if! {
                 T: Send + 'a,
             {
                 #[allow(unused_mut)]
-                self.with_connection(move |conn| async move {
-                    conn
-                    .transaction(move |mut conn| {
-                        async move {
-                            let value = callback(conn).await?;
+                self.with_tx_connection(move |mut conn| async move {
+                    let value = callback(conn).await?;
 
-                            let tx_cleanup = TxCleanup::default();
+                    let tx_cleanup = TxCleanup::default();
 
-                            #[cfg(feature = "deadpool")]
-                            let connection = Arc::new(RwLock::new(conn));
-                            #[cfg(feature = "bb8")]
-                            let connection = Arc::new(RwLock::new(conn.deref_mut()));
+                    #[cfg(feature = "bb8")]
+                    let connection = Arc::new(RwLock::new(conn.deref_mut()));
 
-                            let db_connection = DbConnection {
-                                tx_id: Some(Uuid::new_v4()),
-                                tx_cleanup: tx_cleanup.clone(),
-                                connection,
-                            };
-                            let mut tx_cleanup = tx_cleanup.lock().await;
-                            for tx_cleanup_fn in tx_cleanup.drain(..) {
-                                tx_cleanup_fn(&db_connection).await?;
-                            }
-                            Ok(value)
-                        }
-                        .scope_boxed()
-                    })
-                    .await
+                    #[cfg(feature = "deadpool")]
+                    let connection = Arc::new(RwLock::new(conn));
+
+                    #[cfg(feature = "mobc")]
+                    let connection = Arc::new(RwLock::new(conn.deref_mut()));
+
+                    let db_connection = DbConnection {
+                        tx_id: Some(Uuid::new_v4()),
+                        tx_cleanup: tx_cleanup.clone(),
+                        connection,
+                    };
+                    let mut tx_cleanup = tx_cleanup.lock().await;
+                    for tx_cleanup_fn in tx_cleanup.drain(..) {
+                        tx_cleanup_fn(&db_connection).await?;
+                    }
+                    Ok(value)
                 }.scope_boxed()).await
             }
         }

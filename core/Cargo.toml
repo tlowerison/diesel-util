@@ -29,9 +29,11 @@ tracing.workspace = true
 typed-builder.workspace = true
 uuid.workspace = true
 
+mobc = { version = "^0.7", optional = true }
+
 [features]
 bb8 = ["diesel-async/bb8"]
 deadpool = ["diesel-async/deadpool"]
-mobc = ["diesel-async/mobc"]
+mobc = ["diesel-async/mobc", "dep:mobc"]
 mysql = ["diesel/mysql", "diesel-async/mysql"]
 postgres = ["diesel/postgres", "diesel-async/postgres"]

@@ -1,6 +1,6 @@
 use crate::{
-    _DbPool, lock_conn, AsyncSyncConnectionBridge, DbError, IsNotDeleted, Page, PageRef, Paginate,
-    Paginated, TxCleanupError,
+    IsNotDeleted, Page, PageRef, Paginate, Paginated, ScopedExecuteDsl, ScopedIsNotDeleted,
+    ScopedLoadQuery, TxCleanupError,
 };
 use diesel::associations::HasTable;
 use diesel::backend::Backend;
@@ -14,15 +14,15 @@ use diesel::query_source::QuerySource;
 use diesel::result::Error;
 use diesel::sql_types::SqlType;
 use diesel::{Identifiable, Insertable, Table};
-use diesel_async::pooled_connection::{deadpool::Object, PoolableConnection};
 use diesel_async::{methods::*, AsyncConnection, RunQueryDsl};
-use futures::future::{BoxFuture, FutureExt, TryFutureExt};
+use futures::future::{ready, BoxFuture, FutureExt, TryFutureExt};
 use scoped_futures::{ScopedBoxFuture, ScopedFutureExt};
 use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
+use tracing::Instrument;
 use uuid::Uuid;
 
 pub trait Audit: Into<Self::AuditRow> {
@@ -56,21 +56,73 @@ impl<AC, C> Clone for DbConnection<AC, C> {
     }
 }
 
-pub type DbConnOwned<AC> = DbConnection<AC, Object<AC>>;
-pub type DbConnRef<'a, AC> = DbConnection<AC, &'a mut AC>;
+pub type DbConnRef<'a, C> = DbConnection<C, &'a mut C>;
 
-impl<C: PoolableConnection + 'static> From<Object<C>> for DbConnOwned<C> {
-    fn from(connection: Object<C>) -> Self {
-        DbConnection {
-            tx_id: None,
-            connection: Arc::new(RwLock::new(connection)),
-            tx_cleanup: Arc::new(Mutex::new(vec![])),
+cfg_if! {
+    if #[cfg(feature = "bb8")] {
+        use diesel_async::pooled_connection::bb8::PooledConnection;
+
+        pub type DbConnOwned<'r, C> = DbConnection<C, PooledConnection<'r, C>>;
+
+        impl<'a, C: PoolableConnection + 'static> From<PooledConnection<'a, C>> for DbConnOwned<'a, C> {
+            fn from(connection: PooledConnection<'a, C>) -> Self {
+                DbConnection {
+                    tx_id: None,
+                    connection: Arc::new(RwLock::new(connection)),
+                    tx_cleanup: Arc::new(Mutex::new(vec![])),
+                }
+            }
         }
     }
 }
 
-pub trait DieselUtilAsyncConnection =
-    AsyncConnection + AsyncSyncConnectionBridge + PoolableConnection;
+cfg_if! {
+    if #[cfg(feature = "deadpool")] {
+        use diesel_async::pooled_connection::deadpool::Object;
+
+        type PooledConnection<'a, C> = Object<C>;
+        pub type DbConnOwned<'r, C> = DbConnection<C, Object<C>>;
+
+        impl<'a, C: PoolableConnection + 'static> From<PooledConnection<'a, C>> for DbConnOwned<'a, C> {
+            fn from(connection: PooledConnection<'a, C>) -> Self {
+                DbConnection {
+                    tx_id: None,
+                    connection: Arc::new(RwLock::new(connection)),
+                    tx_cleanup: Arc::new(Mutex::new(vec![])),
+                }
+            }
+        }
+
+    }
+}
+
+cfg_if! {
+    if #[cfg(feature = "mobc")] {
+        use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+        use mobc::Connection;
+
+        type PooledConnection<'a, C> = Connection<AsyncDieselConnectionManager<C>>;
+        pub type DbConnOwned<'r, C> = DbConnection<C, Connection<AsyncDieselConnectionManager<C>>>;
+
+        impl<'a, C: PoolableConnection + mobc::Manager + 'static> From<PooledConnection<'a, C>> for DbConnOwned<'a, C> {
+            fn from(connection: PooledConnection<'a, C>) -> Self {
+                DbConnection {
+                    tx_id: None,
+                    connection: Arc::new(RwLock::new(connection)),
+                    tx_cleanup: Arc::new(Mutex::new(vec![])),
+                }
+            }
+        }
+    }
+}
+
+cfg_if! {
+    if #[cfg(any(feature = "bb8", feature = "deadpool", feature = "mobc"))] {
+        use crate::db_pool::*;
+        use diesel_async::pooled_connection::PoolableConnection;
+        use std::ops::DerefMut;
+    }
+}
 
 pub trait TxFn<'a, C, Fut>: FnOnce(C) -> Fut + Send + 'a {
     fn call_tx_fn(self, connection: C) -> Fut;
@@ -91,7 +143,7 @@ pub trait TxCleanupFn<'r, AC: 'r, E> =
 
 pub type TxCleanup<AC> = Arc<Mutex<Vec<Box<dyn for<'r> TxCleanupFn<'r, AC, TxCleanupError>>>>>;
 
-impl<'a, AC, C> From<DbConnection<AC, C>> for Cow<'a, DbConnection<AC, C>> {
+impl<AC, C> From<DbConnection<AC, C>> for Cow<'_, DbConnection<AC, C>> {
     fn from(value: DbConnection<AC, C>) -> Self {
         Cow::Owned(value)
     }
@@ -105,6 +157,25 @@ impl<'a, AC, C> From<&'a DbConnection<AC, C>> for Cow<'a, DbConnection<AC, C>> {
 
 pub type InsertStmt<Table, T> =
     InsertStatement<Table, BatchInsert<Vec<<T as Insertable<Table>>::Values>, Table, (), false>>;
+
+macro_rules! instrument_err {
+    ($fut:expr) => {
+        $fut.map_err(|err| {
+            tracing::Span::current().record("error", &&*format!("{err:?}"));
+            err
+        })
+        .instrument(tracing::Span::current())
+    };
+}
+
+macro_rules! execute_query {
+    ($self:expr, $query:expr $(,)?) => {{
+        let query = $query;
+        instrument_err!(
+            $self.with_connection(move |connection| Box::pin(query.get_results(connection)))
+        )
+    }};
+}
 
 /// _Db represents a shared reference to a mutable async db connection
 /// It abstracts over the case where the connection is owned vs. a mutable reference.
@@ -122,10 +193,26 @@ pub type InsertStmt<Table, T> =
 pub trait _Db: Clone + Debug + Send + Sync + Sized {
     type Backend: Backend;
     type AsyncConnection: AsyncConnection<Backend = Self::Backend> + 'static;
-    type Connection: DerefMut<Target = Self::AsyncConnection> + Send + Sync;
+    type Connection<'r>: Deref<Target = Self::AsyncConnection> + Send + Sync
+    where
+        Self: 'r;
     type TxConnection<'r>: _Db<Backend = Self::Backend, AsyncConnection = Self::AsyncConnection>;
 
-    async fn connection(&self) -> Result<Cow<'_, Arc<RwLock<Self::Connection>>>, Error>;
+    async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a;
+
+    async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a;
 
     fn tx_id(&self) -> Option<Uuid>;
 
@@ -134,12 +221,12 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
         E: Into<TxCleanupError> + 'static;
 
-    async fn tx<'s, 'a, T, E, F>(&'s self, callback: F) -> Result<T, E>
+    async fn tx<'life0, 'a, T, E, F>(&'life0 self, callback: F) -> Result<T, E>
     where
         F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
         E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
         T: Send + 'a,
-        's: 'a;
+        'life0: 'a;
 
     async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
     where
@@ -147,11 +234,17 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             + Send
             + 'a,
         E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a;
+        T: Send + 'a
+    {
+        self.with_tx_connection(callback).await
+    }
 
     #[framed]
-    #[instrument(err(Debug), skip(self))]
-    async fn get<'query, R, T, Pk, F, I>(&self, ids: I) -> Result<Vec<R>, Error>
+    #[instrument(skip_all)]
+    fn get<'life0, 'async_trait, 'query, R, T, Pk, F, I>(
+        &'life0 self,
+        ids: I,
+    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         Pk: AsExpression<SqlTypeOf<T::PrimaryKey>>,
         I: Debug + IntoIterator<Item = Pk> + Send,
@@ -162,27 +255,36 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         <T::PrimaryKey as Expression>::SqlType: SqlType,
         T: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, I>, Output = F>,
         F: IsNotDeleted<'query, Self::AsyncConnection, R, R>,
+
+        'life0: 'async_trait,
+        'query: 'async_trait,
+        R: 'async_trait,
+        T: 'async_trait,
+        Pk: 'async_trait,
+        F: 'async_trait,
+        I: 'async_trait,
+        Self: 'life0,
     {
         let ids = ids.into_iter();
         if ids.len() == 0 {
-            return Ok(vec![]);
+            return Box::pin(ready(Ok(vec![])));
         }
-        // in block to prevent additional constraints on things requiring Send / Sync because they "might be used again" after the return
-        let query = {
+        execute_query!(
+            self,
             R::table()
                 .filter(R::table().primary_key().eq_any(ids))
-                .is_not_deleted()
-        };
-        Ok(query.get_results(lock_conn!(self)).await?)
+                .is_not_deleted(),
+        )
+        .boxed()
     }
 
     #[framed]
-    #[instrument(err(Debug), skip(self))]
-    async fn get_by_column<'query, R, U, Q, C>(
-        &self,
+    #[instrument(skip_all)]
+    fn get_by_column<'life0, 'async_trait, 'query, R, U, Q, C>(
+        &'life0 self,
         c: C,
         values: impl IntoIterator<Item = U> + Debug + Send,
-    ) -> Result<Vec<R>, Error>
+    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         U: AsExpression<SqlTypeOf<C>>,
         C: Debug + Expression + ExpressionMethods + Send,
@@ -192,62 +294,88 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         <<R as HasTable>::Table as IsNotDeleted<'query, Self::AsyncConnection, R, R>>::IsNotDeletedFilter:
             FilterDsl<ht::EqAny<C, Vec<U>>, Output = Q>,
         Q: Send + LoadQuery<'query, Self::AsyncConnection, R> + 'query,
+
+        'life0: 'async_trait,
+        'query: 'async_trait,
+        R: 'async_trait,
+        U: 'async_trait,
+        Q: 'async_trait,
+        C: 'async_trait,
+        Self: 'life0,
     {
-        // in block to prevent additional constraints on things requiring Send / Sync because they "might be used again" after the return
-        let query = {
+        execute_query!(
+            self,
             R::table()
                 .is_not_deleted()
-                .filter(c.eq_any(values.into_iter().collect::<Vec<_>>()))
-        };
-        Ok(query.get_results(lock_conn!(self)).await?)
+                .filter(c.eq_any(values.into_iter().collect::<Vec<_>>())),
+        )
+        .boxed()
     }
 
     #[framed]
-    #[instrument(err(Debug), skip(self))]
-    async fn get_page<'query, R, P, F>(&self, page: P) -> Result<Vec<R>, Error>
+    #[instrument(skip_all)]
+    async fn get_page<'life0, R, P, F>(
+        &'life0 self,
+        page: P,
+    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         P: Borrow<Page> + Debug + Send,
         R: Send + HasTable,
-        <R as HasTable>::Table:
-            Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        <R as HasTable>::Table: Table
+            + for<'query> IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
         F: Paginate + Send,
         Paginated<<F as AsQuery>::Query>:
-            Send + LoadQuery<'query, Self::AsyncConnection, R> + 'query,
+            for<'query> LoadQuery<'query, Self::AsyncConnection, R> + Send,
+
+        'life0: 'async_trait,
+        R: 'async_trait,
+        P: 'async_trait,
+        F: 'async_trait,
+        Self: 'life0,
     {
         if page.borrow().is_empty() {
-            return Ok(vec![]);
+            return Box::pin(ready(Ok(vec![])));
         }
-        Ok(R::table()
-            .is_not_deleted()
-            .paginate(page)
-            .get_results(lock_conn!(self))
-            .await?)
+        execute_query!(self, R::table().is_not_deleted().paginate(page)).boxed()
     }
 
     #[framed]
-    #[instrument(err(Debug), skip(self))]
-    async fn get_pages<'query, R, P, I, F>(&self, pages: I) -> Result<Vec<R>, Error>
+    #[instrument(skip_all)]
+    fn get_pages<'life0, 'async_trait, R, P, I, F>(
+        &'life0 self,
+        pages: I,
+    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         P: Debug + for<'a> PageRef<'a> + Send,
         I: Debug + IntoIterator<Item = P> + Send,
         <I as IntoIterator>::IntoIter: Send,
         R: Send + HasTable,
-        <R as HasTable>::Table:
-            Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        <R as HasTable>::Table: Table
+            + for<'query> IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
         F: Paginate + Send,
         Paginated<<F as AsQuery>::Query>:
-            Send + LoadQuery<'query, Self::AsyncConnection, R> + 'query,
+            for<'query> LoadQuery<'query, Self::AsyncConnection, R> + Send,
+
+        'life0: 'async_trait,
+        R: 'async_trait,
+        P: 'async_trait,
+        I: 'async_trait,
+        F: 'async_trait,
+        Self: 'life0,
     {
-        Ok(R::table()
-            .is_not_deleted()
-            .multipaginate(pages.into_iter())
-            .get_results(lock_conn!(self))
-            .await?)
+        execute_query!(
+            self,
+            R::table().is_not_deleted().multipaginate(pages.into_iter()),
+        )
+        .boxed()
     }
 
     #[framed]
-    #[instrument(err(Debug), skip(self, values))]
-    async fn insert<R, I, U>(&self, values: I) -> Result<Vec<R>, DbError>
+    #[instrument(skip_all)]
+    fn insert<'life0, 'async_trait, R, I, U>(
+        &'life0 self,
+        values: I,
+    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         U: HasTable + Send,
         <U as HasTable>::Table: Table + QueryId + Send,
@@ -260,7 +388,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         InsertStatement<
             <U as HasTable>::Table,
             <Vec<U> as Insertable<<U as HasTable>::Table>>::Values,
-        >: for<'query> LoadQuery<'query, Self::AsyncConnection, R>,
+        >: for<'query, 'scoped> ScopedLoadQuery<'life0, 'scoped, 'query, Self::AsyncConnection, R>,
 
         R: Audit + Clone + Send,
         <R as Audit>::AuditRow: Send,
@@ -268,23 +396,31 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             + UndecoratedInsertRecord<<<R as Audit>::AuditTable as HasTable>::Table>,
         <<R as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
         <<<R as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
+
         InsertStatement<
             <<R as Audit>::AuditTable as HasTable>::Table,
             <Vec<<R as Audit>::AuditRow> as Insertable<
                 <<R as Audit>::AuditTable as HasTable>::Table,
             >>::Values,
-        >: for<'query> LoadQuery<'query, Self::AsyncConnection, <R as Audit>::AuditRow>,
+        >: for<'a> ExecuteDsl<Self::AsyncConnection>,
+
         <Vec<<R as Audit>::AuditRow> as Insertable<
             <<R as Audit>::AuditTable as HasTable>::Table,
         >>::Values: Send,
-    {
-        self.raw_tx(move |db_conn| {
-            async move {
-                let values = values.into_iter().collect::<Vec<_>>();
-                if values.is_empty() {
-                    return Ok(vec![]);
-                }
 
+        'life0: 'async_trait,
+        R: 'async_trait + 'life0,
+        I: 'async_trait + 'life0,
+        U: 'async_trait + 'life0,
+        Self: 'life0,
+    {
+        instrument_err!(self.raw_tx(move |db_conn| {
+            let values = values.into_iter().collect::<Vec<_>>();
+            if values.is_empty() {
+                return Box::pin(ready(Ok(vec![])));
+            }
+
+            async move {
                 let all_inserted = diesel::insert_into(U::table())
                     .values(values)
                     .get_results::<R>(db_conn)
@@ -296,29 +432,29 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                     .map(|inserted| inserted.into())
                     .collect();
 
-                // TODO: replace usage of `get_result` with `execute` instead of get_result - currently `ExecuteDsl: Sized` cannot be computed for some reason
                 diesel::insert_into(<<R as Audit>::AuditTable as HasTable>::table())
                     .values(audit_posts)
-                    .get_result::<<R as Audit>::AuditRow>(db_conn)
+                    .execute(db_conn)
                     .await?;
 
                 Ok(all_inserted)
             }
             .scope_boxed()
-        })
-        .await
+        }))
+        .boxed()
     }
 
     #[framed]
-    #[instrument(err(Debug), skip(self, value))]
-    async fn insert_one<R, I>(&self, value: I) -> Result<R, DbError>
+    #[instrument(skip_all)]
+    fn insert_one<'life0, 'async_trait, R, I>(&'async_trait self, value: I) -> BoxFuture<'async_trait, Result<R, Error>>
     where
         I: HasTable + Insertable<<I as HasTable>::Table> + Send,
         <I as Insertable<<I as HasTable>::Table>>::Values: Send,
         <I as HasTable>::Table: Table + QueryId + Send,
         <<I as HasTable>::Table as QuerySource>::FromClause: Send,
+
         InsertStatement<<I as HasTable>::Table, <I as Insertable<<I as HasTable>::Table>>::Values>:
-            for<'query> LoadQuery<'query, Self::AsyncConnection, R>,
+            for<'query, 'scoped> ScopedLoadQuery<'life0, 'scoped, 'query, Self::AsyncConnection, R>,
 
         R: Audit + Clone + Send,
         <R as Audit>::AuditRow: Send,
@@ -326,13 +462,19 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             + UndecoratedInsertRecord<<<R as Audit>::AuditTable as HasTable>::Table>,
         <<R as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
         <<<R as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
+
         InsertStatement<
             <<R as Audit>::AuditTable as HasTable>::Table,
             <<R as Audit>::AuditRow as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values,
-        >: for<'query> LoadQuery<'query, Self::AsyncConnection, <R as Audit>::AuditRow>,
+        >: for<'a> ExecuteDsl<Self::AsyncConnection>,
+
         <<R as Audit>::AuditRow as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
+
+        'life0: 'async_trait,
+        R: 'async_trait,
+        I: 'async_trait,
     {
-        self.raw_tx(move |db_conn| {
+        instrument_err!(self.raw_tx(move |db_conn| {
             async move {
                 let inserted = diesel::insert_into(I::table())
                     .values(value)
@@ -341,22 +483,24 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
                 let audit_post: <R as Audit>::AuditRow = inserted.clone().into();
 
-                // TODO: replace usage of `get_result` with `execute` instead of get_result - currently `ExecuteDsl: Sized` cannot be computed for some reason
                 diesel::insert_into(<<R as Audit>::AuditTable as HasTable>::table())
                     .values(audit_post)
-                    .get_result::<<R as Audit>::AuditRow>(db_conn)
+                    .execute(db_conn)
                     .await?;
 
                 Ok(inserted)
             }
             .scope_boxed()
-        })
-        .await
+        }))
+        .boxed()
     }
 
     #[framed]
-    #[instrument(err(Debug), skip(self, values))]
-    async fn insert_without_audit<R, I, U>(&self, values: I) -> Result<Vec<R>, DbError>
+    #[instrument(skip_all)]
+    fn insert_without_audit<'life0, 'async_trait, R, I, U>(
+        &'life0 self,
+        values: I,
+    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         U: HasTable + Send,
         <U as HasTable>::Table: Table + QueryId + Send,
@@ -371,20 +515,25 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             <U as HasTable>::Table,
             <Vec<U> as Insertable<<U as HasTable>::Table>>::Values,
         >: for<'query> LoadQuery<'query, Self::AsyncConnection, R>,
+
+        'life0: 'async_trait,
+        R: 'async_trait,
+        I: 'async_trait,
+        U: 'async_trait,
     {
         let values = values.into_iter().collect::<Vec<_>>();
         if values.is_empty() {
-            return Ok(vec![]);
+            return Box::pin(ready(Ok(vec![])));
         }
-        Ok(diesel::insert_into(U::table())
-            .values(values)
-            .get_results::<R>(lock_conn!(self))
-            .await?)
+        execute_query!(self, diesel::insert_into(U::table()).values(values),).boxed()
     }
 
     #[framed]
-    #[instrument(err(Debug), skip(self, value))]
-    async fn insert_one_without_audit<R, I>(&self, value: I) -> Result<R, DbError>
+    #[instrument(skip_all)]
+    fn insert_one_without_audit<'life0, 'async_trait, R, I>(
+        &'life0 self,
+        value: I,
+    ) -> BoxFuture<'async_trait, Result<R, Error>>
     where
         I: HasTable + Insertable<<I as HasTable>::Table> + Send,
         <I as Insertable<<I as HasTable>::Table>>::Values: Send,
@@ -395,16 +544,22 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         <<I as HasTable>::Table as QuerySource>::FromClause: Send,
         InsertStatement<<I as HasTable>::Table, <I as Insertable<<I as HasTable>::Table>>::Values>:
             for<'query> LoadQuery<'query, Self::AsyncConnection, R>,
+
+        'life0: 'async_trait,
+        R: 'async_trait,
+        I: 'async_trait,
     {
-        Ok(diesel::insert_into(I::table())
-            .values(value)
-            .get_result::<R>(lock_conn!(self))
-            .await?)
+        execute_query!(self, diesel::insert_into(I::table()).values(value))
+            .and_then(|mut results| ready(results.pop().ok_or_else(|| Error::NotFound)))
+            .boxed()
     }
 
     #[framed]
-    #[instrument(err(Debug), skip(self, patches))]
-    async fn update<R, I, U, T, Pk, F>(&self, patches: I) -> Result<Vec<R>, DbError>
+    #[instrument(skip_all)]
+    fn update<'life0, 'async_trait, R, I, U, T, Pk, F>(
+        &'life0 self,
+        patches: I,
+    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         U: AsChangeset<Target = T> + HasTable<Table = T> + IncludesChanges + Send + Sync,
         for<'a> &'a U: HasTable<Table = T> + Identifiable<Id = &'a Pk> + IntoUpdateTarget,
@@ -413,8 +568,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         ht::Find<T, Pk>: IntoUpdateTarget,
         <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause: Send,
-        for<'a> ht::Update<ht::Find<T, Pk>, U>:
-            AsQuery + LoadQuery<'a, Self::AsyncConnection, R> + Send,
+        ht::Update<ht::Find<T, Pk>, U>: AsQuery
+            + for<'query, 'scoped> ScopedLoadQuery<'life0, 'scoped, 'query, Self::AsyncConnection, R>
+            + Send,
 
         Pk: AsExpression<SqlTypeOf<T::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
 
@@ -436,18 +592,34 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         <Vec<<R as Audit>::AuditRow> as Insertable<
             <<R as Audit>::AuditTable as HasTable>::Table,
         >>::Values: Send,
+
         InsertStatement<
             <<R as Audit>::AuditTable as HasTable>::Table,
             <Vec<<R as Audit>::AuditRow> as Insertable<
                 <<R as Audit>::AuditTable as HasTable>::Table,
             >>::Values,
-        >: for<'a> LoadQuery<'a, Self::AsyncConnection, <R as Audit>::AuditRow>,
+        >: for<'scoped> ScopedExecuteDsl<'life0, 'scoped, Self::AsyncConnection>,
 
         T: Table,
         T::PrimaryKey: Expression + ExpressionMethods,
         <T::PrimaryKey as Expression>::SqlType: SqlType,
         T: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, Vec<Pk>>, Output = F>,
-        F: for<'a> IsNotDeleted<'a, Self::AsyncConnection, R, R>,
+        F: for<'query, 'scoped> ScopedIsNotDeleted<
+            'life0,
+            'scoped,
+            'query,
+            Self::AsyncConnection,
+            R,
+            R,
+        >,
+
+        'life0: 'async_trait,
+        R: 'async_trait,
+        I: 'async_trait,
+        U: 'async_trait,
+        T: 'async_trait,
+        Pk: 'async_trait,
+        F: 'async_trait,
     {
         let patches = patches.into_iter().collect::<Vec<U>>();
         let ids = patches
@@ -488,10 +660,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                     .map(|record| record.into())
                     .collect();
 
-                // TODO: replace usage of `get_result` with `execute` instead of get_result - currently `ExecuteDsl: Sized` cannot be computed for some reason
                 diesel::insert_into(<<R as Audit>::AuditTable as HasTable>::table())
                     .values(audit_posts)
-                    .get_result::<<R as Audit>::AuditRow>(db_conn)
+                    .execute(db_conn)
                     .await?;
 
                 let filter = FilterDsl::filter(
@@ -514,26 +685,40 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             }
             .scope_boxed()
         })
-        .await
     }
 }
 
 #[async_trait]
-impl<C> _Db for DbConnOwned<C>
-where
-    C: AsyncConnection + PoolableConnection + Sync + 'static,
-{
-    type Backend = <C as AsyncConnection>::Backend;
-    type AsyncConnection = C;
-    type Connection = Object<C>;
-    type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
+impl<'d, D: _Db + Clone> _Db for Cow<'d, D> {
+    type Backend = D::Backend;
+    type AsyncConnection = D::AsyncConnection;
+    type Connection<'r> = D::Connection<'r> where Self: 'r;
+    type TxConnection<'r> = D::TxConnection<'r>;
 
-    async fn connection(&self) -> Result<Cow<'_, Arc<RwLock<Self::Connection>>>, Error> {
-        Ok(Cow::Borrowed(self.deref()))
+    async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a,
+    {
+        (**self).with_connection(f).await
+    }
+
+    async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a,
+    {
+        (**self).with_tx_connection(f).await
     }
 
     fn tx_id(&self) -> Option<Uuid> {
-        self.tx_id
+        (**self).tx_id()
     }
 
     #[framed]
@@ -542,25 +727,137 @@ where
         F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
         E: Into<TxCleanupError> + 'static,
     {
-        let mut tx_cleanup = self.tx_cleanup.lock().await;
-        tx_cleanup.push(Box::new(|x| f(x).map_err(Into::into).boxed()));
+        (**self).tx_cleanup(f).await
     }
 
-    #[framed]
-    async fn tx<'s, 'a, T, E, F>(&'s self, callback: F) -> Result<T, E>
+    async fn tx<'life0, 'a, T, E, F>(&'life0 self, callback: F) -> Result<T, E>
     where
         F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
         E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
         T: Send + 'a,
-        's: 'a,
+        'life0: 'a,
     {
-        let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
-        lock_conn!(self)
-            .transaction(move |connection| {
-                async move {
+        (**self).tx(callback).await
+    }
+}
+
+#[async_trait]
+impl<'d, D: _Db + Clone> _Db for &'d D {
+    type Backend = D::Backend;
+    type AsyncConnection = D::AsyncConnection;
+    type Connection<'r> = D::Connection<'r> where Self: 'r;
+    type TxConnection<'r> = D::TxConnection<'r>;
+
+    async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a,
+    {
+        (**self).with_connection(f).await
+    }
+
+    async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+            + Send
+            + 'a,
+        E: Debug + From<Error> + Send + 'a,
+        T: Send + 'a,
+    {
+        (**self).with_tx_connection(f).await
+    }
+
+    fn tx_id(&self) -> Option<Uuid> {
+        (**self).tx_id()
+    }
+
+    #[framed]
+    async fn tx_cleanup<F, E>(&self, f: F)
+    where
+        F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
+        E: Into<TxCleanupError> + 'static,
+    {
+        (**self).tx_cleanup(f).await
+    }
+
+    async fn tx<'life0, 'a, T, E, F>(&'life0 self, callback: F) -> Result<T, E>
+    where
+        F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
+        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
+        T: Send + 'a,
+        'life0: 'a,
+    {
+        (**self).tx(callback).await
+    }
+}
+
+cfg_if! {
+    if #[cfg(any(feature = "bb8", feature = "deadpool", feature = "mobc"))] {
+        #[async_trait]
+        impl<'d, C> _Db for DbConnOwned<'d, C>
+        where
+            C: AsyncConnection + PoolableConnection + Sync + 'static,
+        {
+            type Backend = <C as AsyncConnection>::Backend;
+            type AsyncConnection = C;
+            type Connection<'r> = PooledConnection<'r, C> where Self: 'r;
+            type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
+
+            async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let mut connection = self.connection.write().await;
+                f(connection.deref_mut().deref_mut()).await
+            }
+
+            async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let mut connection = self.connection.write().await;
+                let connection = connection.deref_mut().deref_mut();
+                connection.transaction(f).await
+            }
+
+            fn tx_id(&self) -> Option<Uuid> {
+                self.tx_id
+            }
+
+            #[framed]
+            async fn tx_cleanup<F, E>(&self, f: F)
+            where
+                F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
+                E: Into<TxCleanupError> + 'static,
+            {
+                let mut tx_cleanup = self.tx_cleanup.lock().await;
+                tx_cleanup.push(Box::new(|x| f(x).map_err(Into::into).boxed()));
+            }
+
+            #[framed]
+            async fn tx<'life0, 'a, T, E, F>(&'life0 self, callback: F) -> Result<T, E>
+            where
+                F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
+                E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
+                T: Send + 'a,
+                'life0: 'a,
+            {
+                let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
+                self.with_tx_connection(move |mut conn| async move {
                     let db_connection = DbConnection {
                         tx_id: Some(Uuid::new_v4()),
-                        connection: Arc::new(RwLock::new(connection)),
+                        connection: Arc::new(RwLock::new(conn.deref_mut())),
                         tx_cleanup: tx_cleanup.clone(),
                     };
                     let value = callback.call_tx_fn(Cow::Borrowed(&db_connection)).await?;
@@ -569,296 +866,240 @@ where
                         tx_cleanup_fn(&db_connection).await?;
                     }
                     Ok::<T, E>(value)
-                }
-                .scope_boxed()
-            })
-            .await
-    }
+                }.scope_boxed()).await
+            }
 
-    #[framed]
-    async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-    {
-        let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
-        self.connection()
-            .await?
-            .write()
-            .await
-            .deref_mut()
-            .transaction(move |connection| {
-                async move {
-                    let value = callback(connection).await?;
+            #[framed]
+            async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
+                T: Send + 'a,
+            {
+                let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
+                #[allow(unused_mut)]
+                self.with_tx_connection(move |mut conn| async move {
+                    let value = callback(conn).await?;
+
+                    #[cfg(feature = "bb8")]
+                    let connection = Arc::new(RwLock::new(conn.deref_mut()));
+
+                    #[cfg(feature = "deadpool")]
+                    let connection = Arc::new(RwLock::new(conn));
+
+                    #[cfg(feature = "mobc")]
+                    let connection = Arc::new(RwLock::new(conn.deref_mut()));
+
                     let db_connection = DbConnection {
                         tx_id: Some(Uuid::new_v4()),
-                        connection: Arc::new(RwLock::new(connection.as_mut())),
                         tx_cleanup: tx_cleanup.clone(),
+                        connection,
                     };
                     let mut tx_cleanup = tx_cleanup.lock().await;
                     for tx_cleanup_fn in tx_cleanup.drain(..) {
                         tx_cleanup_fn(&db_connection).await?;
                     }
                     Ok(value)
-                }
-                .scope_boxed()
-            })
-            .await
-    }
-}
-
-#[async_trait]
-impl<'d, C> _Db for DbConnRef<'d, C>
-where
-    C: AsyncConnection + PoolableConnection + Sync + 'static,
-{
-    type Backend = <C as AsyncConnection>::Backend;
-    type AsyncConnection = C;
-    type Connection = &'d mut C;
-    type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
-
-    async fn connection(&self) -> Result<Cow<'_, Arc<RwLock<Self::Connection>>>, Error> {
-        Ok(Cow::Borrowed(&self.connection))
-    }
-
-    fn tx_id(&self) -> Option<Uuid> {
-        self.tx_id
-    }
-
-    #[framed]
-    async fn tx_cleanup<F, E>(&self, f: F)
-    where
-        F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
-        E: Into<TxCleanupError> + 'static,
-    {
-        let mut tx_cleanup = self.tx_cleanup.lock().await;
-        tx_cleanup.push(Box::new(|x| f(x).map_err(Into::into).boxed()));
-    }
-
-    async fn tx<'s, 'a, T, E, F>(&'s self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-        's: 'a,
-    {
-        let tx_id = self.tx_id;
-        let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
-        lock_conn!(self)
-            .transaction(move |connection| {
-                let db_connection = DbConnection {
-                    connection: Arc::new(RwLock::new(connection)),
-                    tx_cleanup: tx_cleanup.clone(),
-                    tx_id,
-                };
-                callback.call_tx_fn(Cow::Owned(db_connection)).scope_boxed()
-            })
-            .await
-    }
-
-    #[framed]
-    async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-    {
-        lock_conn!(self)
-            .transaction(move |connection| async move { callback(connection).await }.scope_boxed())
-            .await
-    }
-}
-
-#[async_trait]
-impl<C> _Db for _DbPool<C>
-where
-    C: AsyncConnection + AsyncSyncConnectionBridge + PoolableConnection + Sync + 'static,
-{
-    type Backend = <C as AsyncConnection>::Backend;
-    type AsyncConnection = C;
-    type Connection = Object<C>;
-    type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
-
-    async fn connection(&self) -> Result<Cow<'_, Arc<RwLock<Self::Connection>>>, Error> {
-        self.get_connection()
-            .await
-            .map(|db_connection| Cow::Owned(db_connection.connection))
-            .map_err(|err| {
-                Error::DatabaseError(
-                    diesel::result::DatabaseErrorKind::UnableToSendCommand,
-                    Box::new(format!("{err}")),
-                )
-            })
-    }
-
-    fn tx_id(&self) -> Option<Uuid> {
-        None
-    }
-
-    async fn tx_cleanup<F, E>(&self, _: F)
-    where
-        F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
-        E: Into<TxCleanupError> + 'static,
-    {
-    }
-
-    #[framed]
-    async fn tx<'s, 'a, T, E, F>(&'s self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-        's: 'a,
-    {
-        self.raw_tx(|async_connection| {
-            async move {
-                let tx_cleanup = TxCleanup::default();
-                let db_connection = DbConnection {
-                    tx_id: Some(Uuid::new_v4()),
-                    connection: Arc::new(RwLock::new(async_connection)),
-                    tx_cleanup: tx_cleanup.clone(),
-                };
-                let value = callback.call_tx_fn(Cow::Borrowed(&db_connection)).await?;
-                let mut tx_cleanup = tx_cleanup.lock().await;
-                for tx_cleanup_fn in tx_cleanup.drain(..) {
-                    tx_cleanup_fn(&db_connection).await?;
-                }
-                Ok::<T, E>(value)
+                }.scope_boxed()).await
             }
-            .scope_boxed()
-        })
-        .await
-    }
+        }
 
-    #[framed]
-    async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-    {
-        self.connection()
-            .await?
-            .write()
-            .await
-            .deref_mut()
-            .transaction(move |async_connection| {
-                async move {
-                    let value = callback(async_connection).await?;
+        #[async_trait]
+        impl<'d, C> _Db for DbConnection<C, &'d mut C>
+        where
+            C: AsyncConnection + PoolableConnection + Sync + 'static,
+        {
+            type Backend = <C as AsyncConnection>::Backend;
+            type AsyncConnection = C;
+            type Connection<'r> = &'d mut C where Self: 'r;
+            type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
+
+            async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let mut connection = self.connection.write().await;
+                f(connection.deref_mut().deref_mut()).await
+            }
+
+            async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let mut connection = self.connection.write().await;
+                let connection = connection.deref_mut().deref_mut();
+                connection.transaction(f).await
+            }
+
+            fn tx_id(&self) -> Option<Uuid> {
+                self.tx_id
+            }
+
+            #[framed]
+            async fn tx_cleanup<F, E>(&self, f: F)
+            where
+                F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
+                E: Into<TxCleanupError> + 'static,
+            {
+                let mut tx_cleanup = self.tx_cleanup.lock().await;
+                tx_cleanup.push(Box::new(|x| f(x).map_err(Into::into).boxed()));
+            }
+
+            async fn tx<'life0, 'a, T, E, F>(&'life0 self, callback: F) -> Result<T, E>
+            where
+                F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
+                E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
+                T: Send + 'a,
+                'life0: 'a,
+            {
+                let tx_id = self.tx_id;
+                let tx_cleanup = <Self as AsRef<TxCleanup<Self::AsyncConnection>>>::as_ref(self).clone();
+                self.with_tx_connection(move |conn| {
+                    let db_connection = DbConnection {
+                        connection: Arc::new(RwLock::new(conn)),
+                        tx_cleanup: tx_cleanup.clone(),
+                        tx_id,
+                    };
+                    callback.call_tx_fn(Cow::Owned(db_connection)).scope_boxed()
+                })
+                .await
+            }
+
+            #[framed]
+            async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
+                T: Send + 'a,
+            {
+                self.with_tx_connection(move |conn| callback(conn).scope_boxed()).await
+            }
+        }
+
+        #[async_trait]
+        impl<C> _Db for _DbPool<C>
+        where
+            C: AsyncSyncConnectionBridge + Sync + 'static,
+        {
+            type Backend = <C as AsyncConnection>::Backend;
+            type AsyncConnection = C;
+            type Connection<'r> = PooledConnection<'r, C>;
+            type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
+
+            async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let connection = self.get_connection().await?;
+                let mut connection = connection.write().await;
+                f(connection.deref_mut().deref_mut()).await
+            }
+
+            async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + Send + 'a,
+                T: Send + 'a
+            {
+                let connection = self.get_connection().await?;
+                let mut connection = connection.write().await;
+                let connection = connection.deref_mut().deref_mut();
+                connection.transaction(f).await
+            }
+
+            fn tx_id(&self) -> Option<Uuid> {
+                None
+            }
+
+            async fn tx_cleanup<F, E>(&self, _: F)
+            where
+                F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
+                E: Into<TxCleanupError> + 'static,
+            {
+            }
+
+            #[framed]
+            async fn tx<'life0, 'a, T, E, F>(&'life0 self, callback: F) -> Result<T, E>
+            where
+                F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
+                E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
+                T: Send + 'a,
+                'life0: 'a,
+            {
+                self.raw_tx(|async_connection| {
+                    async move {
+                        let tx_cleanup = TxCleanup::default();
+                        let db_connection = DbConnection {
+                            tx_id: Some(Uuid::new_v4()),
+                            connection: Arc::new(RwLock::new(async_connection)),
+                            tx_cleanup: tx_cleanup.clone(),
+                        };
+                        let value = callback.call_tx_fn(Cow::Borrowed(&db_connection)).await?;
+                        let mut tx_cleanup = tx_cleanup.lock().await;
+                        for tx_cleanup_fn in tx_cleanup.drain(..) {
+                            tx_cleanup_fn(&db_connection).await?;
+                        }
+                        Ok::<T, E>(value)
+                    }
+                    .scope_boxed()
+                })
+                .await
+            }
+
+            #[framed]
+            async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
+                T: Send + 'a,
+            {
+                #[allow(unused_mut)]
+                self.with_tx_connection(move |mut conn| async move {
+                    let value = callback(conn).await?;
 
                     let tx_cleanup = TxCleanup::default();
+
+                    #[cfg(feature = "bb8")]
+                    let connection = Arc::new(RwLock::new(conn.deref_mut()));
+
+                    #[cfg(feature = "deadpool")]
+                    let connection = Arc::new(RwLock::new(conn));
+
+                    #[cfg(feature = "mobc")]
+                    let connection = Arc::new(RwLock::new(conn.deref_mut()));
+
                     let db_connection = DbConnection {
                         tx_id: Some(Uuid::new_v4()),
-                        connection: Arc::new(RwLock::new(async_connection.as_mut())),
                         tx_cleanup: tx_cleanup.clone(),
+                        connection,
                     };
                     let mut tx_cleanup = tx_cleanup.lock().await;
                     for tx_cleanup_fn in tx_cleanup.drain(..) {
                         tx_cleanup_fn(&db_connection).await?;
                     }
                     Ok(value)
-                }
-                .scope_boxed()
-            })
-            .await
-    }
-}
-
-#[async_trait]
-impl<'d, D: _Db + Clone> _Db for Cow<'d, D> {
-    type Backend = <D::AsyncConnection as AsyncConnection>::Backend;
-    type AsyncConnection = D::AsyncConnection;
-    type Connection = D::Connection;
-    type TxConnection<'r> = D::TxConnection<'r>;
-
-    async fn connection(&self) -> Result<Cow<'_, Arc<RwLock<Self::Connection>>>, Error> {
-        (**self).connection().await
-    }
-
-    fn tx_id(&self) -> Option<Uuid> {
-        (**self).tx_id()
-    }
-
-    #[framed]
-    async fn tx_cleanup<F, E>(&self, f: F)
-    where
-        F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
-        E: Into<TxCleanupError> + 'static,
-    {
-        (**self).tx_cleanup(f).await
-    }
-
-    async fn tx<'s, 'a, T, E, F>(&'s self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-        's: 'a,
-    {
-        (**self).tx(callback).await
-    }
-
-    async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-    {
-        (**self).raw_tx(callback).await
-    }
-}
-
-#[async_trait]
-impl<'d, D: _Db + Clone> _Db for &'d D {
-    type Backend = <D::AsyncConnection as AsyncConnection>::Backend;
-    type AsyncConnection = D::AsyncConnection;
-    type Connection = D::Connection;
-    type TxConnection<'r> = D::TxConnection<'r>;
-
-    async fn connection(&self) -> Result<Cow<'_, Arc<RwLock<Self::Connection>>>, Error> {
-        (**self).connection().await
-    }
-
-    fn tx_id(&self) -> Option<Uuid> {
-        (**self).tx_id()
-    }
-
-    #[framed]
-    async fn tx_cleanup<F, E>(&self, f: F)
-    where
-        F: for<'r> TxCleanupFn<'r, Self::AsyncConnection, E>,
-        E: Into<TxCleanupError> + 'static,
-    {
-        (**self).tx_cleanup(f).await
-    }
-
-    async fn tx<'s, 'a, T, E, F>(&'s self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> TxFn<'a, Self::TxConnection<'r>, ScopedBoxFuture<'a, 'r, Result<T, E>>>,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-        's: 'a,
-    {
-        (**self).tx(callback).await
-    }
-
-    async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
-    where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
-        E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
-        T: Send + 'a,
-    {
-        (**self).raw_tx(callback).await
+                }.scope_boxed()).await
+            }
+        }
     }
 }

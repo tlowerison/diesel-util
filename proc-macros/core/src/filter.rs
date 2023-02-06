@@ -1034,31 +1034,34 @@ fn get_dynamic_query(
     NestedQuery {
         multipaginated: quote! {
             #tokens
-            query
+            diesel_util::_Db::with_connection(&db, move |conn| query
                 #group_by_clause
                 #order_by_clauses
                 .multipaginate(pages.iter())
                 #partition_clause
-                .get_results::<#deserialize_ty>(diesel_util::lock_conn!(db))
-                .await
+                .get_results::<#deserialize_ty>(conn)
+                .scope_boxed()
+            ).await
         },
         non_paginated: quote! {
             #tokens
-            query
+            diesel_util::_Db::with_connection(&db, move |conn| query
                 #group_by_clause
                 #order_by_clauses
-                .get_results::<#deserialize_ty>(diesel_util::lock_conn!(db))
-                .await
+                .get_results::<#deserialize_ty>(conn)
+                .scope_boxed()
+            ).await
         },
         paginated: quote! {
             #tokens
-            query
+            diesel_util::_Db::with_connection(&db, move |conn| query
                 #group_by_clause
                 #order_by_clauses
                 .paginate(page)
                 #partition_clause
-                .get_results::<#deserialize_ty>(diesel_util::lock_conn!(db))
-                .await
+                .get_results::<#deserialize_ty>(conn)
+                .scope_boxed()
+            ).await
         },
     }
 }
@@ -1090,35 +1093,37 @@ fn get_static_query(
             .collect();
         return NestedQuery {
             multipaginated: quote! {
-                #base_query
-                #(#filter_clauses)*
-                #group_by_clause
-                #order_by_clauses
-                #select_clause
-                .multipaginate(pages.iter())
-                #partition_clause
-                .get_results::<#deserialize_ty>(diesel_util::lock_conn!(db))
-                .await
+                diesel_util::_Db::with_connection(&db, move |conn| #base_query
+                    #(#filter_clauses)*
+                    #group_by_clause
+                    #order_by_clauses
+                    #select_clause
+                    .multipaginate(pages.iter())
+                    #partition_clause
+                    .get_results::<#deserialize_ty>(conn)
+                    .scope_boxed()
+                ).await
             },
             non_paginated: quote! {
-                #base_query
-                #(#filter_clauses)*
-                #group_by_clause
-                #order_by_clauses
-                #select_clause
-                .get_results::<#deserialize_ty>(diesel_util::lock_conn!(db))
-                .await
+                diesel_util::_Db::with_connection(&db, move |conn| #base_query
+                    #(#filter_clauses)*
+                    #group_by_clause
+                    #order_by_clauses
+                    #select_clause
+                    .get_results::<#deserialize_ty>(conn)
+                    .scope_boxed()
+                ).await
             },
             paginated: quote! {
-                #base_query
-                #(#filter_clauses)*
-                #group_by_clause
-                #order_by_clauses
-                #select_clause
-                .paginate(page)
-                #partition_clause
-                .get_results::<#deserialize_ty>(diesel_util::lock_conn!(db))
-                .await
+                diesel_util::_Db::with_connection(&db, move |conn| #base_query
+                    #(#filter_clauses)*
+                    #group_by_clause
+                    #order_by_clauses
+                    #select_clause
+                    .paginate(page)
+                    #partition_clause
+                    .get_results::<#deserialize_ty>(conn)
+                ).await
             },
         };
     }

@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use syn::parse::{Error, Parse, ParseStream};
 use syn::parse2;
 
-const FIELD_ATTRIBUTE: &str = ""
+const FIELD_ATTRIBUTE: &str = "id";
 
 #[derive(Clone, Debug)]
 struct EnumAttribute {

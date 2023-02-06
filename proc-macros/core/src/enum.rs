@@ -3,6 +3,8 @@ use proc_macro2::TokenStream;
 use syn::parse::{Error, Parse, ParseStream};
 use syn::parse2;
 
+const FIELD_ATTRIBUTE: &str = ""
+
 #[derive(Clone, Debug)]
 struct EnumAttribute {
     uuid_literal: syn::LitStr,
@@ -25,7 +27,10 @@ pub fn derive_enum(item: TokenStream) -> Result<TokenStream, Error> {
     let ident = &ast.ident;
     let ident_str = format!("{ident}");
     let ident_snake = format_ident!("{}", ident.to_string().to_case(Case::Snake));
-    let mod_name = format_ident!("sql_uuid_enum_{}", ident.to_string().to_case(Case::Snake));
+    let mod_name = format_ident!(
+        "diesel_util_enum_{}",
+        ident.to_string().to_case(Case::Snake)
+    );
 
     let data_enum = match &ast.data {
         syn::Data::Enum(data_enum) => data_enum,
@@ -54,7 +59,7 @@ pub fn derive_enum(item: TokenStream) -> Result<TokenStream, Error> {
         let uuid_attrs = variant
             .attrs
             .iter()
-            .filter(|attr| attr.path.is_ident("uuid"))
+            .filter(|attr| attr.path.is_ident(FIELD_ATTRIBUTE))
             .collect::<Vec<_>>();
         if uuid_attrs.len() != 1 {
             return Err(Error::new_spanned(

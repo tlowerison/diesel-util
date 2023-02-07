@@ -19,6 +19,12 @@ pub use diesel_async::pooled_connection::mobc::Pool as InnerPool;
 #[derivative(Debug)]
 pub struct Pool<C: AsyncPoolableConnection>(#[derivative(Debug = "ignore")] pub Arc<InnerPool<C>>);
 
+impl<C: AsyncPoolableConnection> Pool<C> {
+    pub fn new(inner_pool: InnerPool<C>) -> Self {
+        Self(Arc::new(inner_pool))
+    }
+}
+
 impl<C: AsyncPoolableConnection> Clone for Pool<C> {
     fn clone(&self) -> Self {
         Self(self.0.clone())

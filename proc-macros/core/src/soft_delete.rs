@@ -107,18 +107,13 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
     let primary_key_ty = &primary_key_field.ty;
 
     let additional_impls = if soft_delete_attribute.db_entity.is_some() {
-        let mut impl_generics = ast.generics.clone();
-        impl_generics.params.push(parse_quote!(D: Db));
-        let (impl_generics, _, _) = impl_generics.split_for_impl();
-
-        let (_, ty_generics, where_clause) = ast.generics.split_for_impl();
-
+        let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
         quote!(
             impl diesel_util::SoftDeletable for #db_entity_path {
                 type DeletedAt = #table_name::#deleted_at_column_name;
             }
 
-            impl #impl_generics diesel_util::DbSoftDelete<D> for #ident #ty_generics #where_clause {
+            impl #impl_generics diesel_util::DbSoftDelete for #ident #ty_generics #where_clause {
                 type DeletePatchHelper<'a> = #primary_key_ty;
                 type DeletePatch<'a> = #soft_delete_ident;
             }
@@ -148,7 +143,7 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
             }
         }
 
-        impl<D: Db> diesel_util::DbSoftDelete<D> for #db_entity_path {
+        impl diesel_util::DbSoftDelete for #db_entity_path {
             type DeletePatchHelper<'a> = #primary_key_ty;
             type DeletePatch<'a> = #soft_delete_ident;
         }

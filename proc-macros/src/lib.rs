@@ -28,7 +28,7 @@ pub fn derive_enum(tokens: TokenStream) -> TokenStream {
 
 #[proc_macro_derive(IncludesChanges)]
 pub fn derive_includes_changes(tokens: TokenStream) -> TokenStream {
-    match core::derive_audit(tokens.into()) {
+    match core::derive_includes_changes(tokens.into()) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.into_compile_error().into(),
     }

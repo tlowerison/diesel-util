@@ -567,7 +567,7 @@ impl DbFilterColumn {
                 operand,
                 operand_ty,
             } => (
-                quote! { #comparison((&#operand_ident).into_iter()) },
+                quote! { #comparison(#operand_ident.into_iter()) },
                 Some(operand),
                 operand_ty.as_ref(),
             ),
@@ -1034,34 +1034,31 @@ fn get_dynamic_query(
     NestedQuery {
         multipaginated: quote! {
             #tokens
-            diesel_util::_Db::with_connection(&db, move |conn| query
+            diesel_util::_Db::query(&db, move |conn| Box::pin(query
                 #group_by_clause
                 #order_by_clauses
                 .multipaginate(pages.iter())
                 #partition_clause
                 .get_results::<#deserialize_ty>(conn)
-                .scope_boxed()
-            ).await
+            )).await
         },
         non_paginated: quote! {
             #tokens
-            diesel_util::_Db::with_connection(&db, move |conn| query
+            diesel_util::_Db::query(&db, move |conn| Box::pin(query
                 #group_by_clause
                 #order_by_clauses
                 .get_results::<#deserialize_ty>(conn)
-                .scope_boxed()
-            ).await
+            )).await
         },
         paginated: quote! {
             #tokens
-            diesel_util::_Db::with_connection(&db, move |conn| query
+            diesel_util::_Db::query(&db, move |conn| Box::pin(query
                 #group_by_clause
                 #order_by_clauses
                 .paginate(page)
                 #partition_clause
                 .get_results::<#deserialize_ty>(conn)
-                .scope_boxed()
-            ).await
+            )).await
         },
     }
 }
@@ -1093,7 +1090,7 @@ fn get_static_query(
             .collect();
         return NestedQuery {
             multipaginated: quote! {
-                diesel_util::_Db::with_connection(&db, move |conn| #base_query
+                diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
                     #(#filter_clauses)*
                     #group_by_clause
                     #order_by_clauses
@@ -1101,21 +1098,19 @@ fn get_static_query(
                     .multipaginate(pages.iter())
                     #partition_clause
                     .get_results::<#deserialize_ty>(conn)
-                    .scope_boxed()
-                ).await
+                )).await
             },
             non_paginated: quote! {
-                diesel_util::_Db::with_connection(&db, move |conn| #base_query
+                diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
                     #(#filter_clauses)*
                     #group_by_clause
                     #order_by_clauses
                     #select_clause
                     .get_results::<#deserialize_ty>(conn)
-                    .scope_boxed()
-                ).await
+                )).await
             },
             paginated: quote! {
-                diesel_util::_Db::with_connection(&db, move |conn| #base_query
+                diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
                     #(#filter_clauses)*
                     #group_by_clause
                     #order_by_clauses
@@ -1123,7 +1118,7 @@ fn get_static_query(
                     .paginate(page)
                     #partition_clause
                     .get_results::<#deserialize_ty>(conn)
-                ).await
+                )).await
             },
         };
     }

@@ -1,4 +1,4 @@
-use crate::{IsNotDeleted, Page, PageRef, Paginate, Paginated};
+use crate::*;
 use async_backtrace::{backtrace, Location};
 use diesel::associations::HasTable;
 use diesel::backend::Backend;
@@ -154,7 +154,6 @@ cfg_if! {
 
 cfg_if! {
     if #[cfg(any(feature = "bb8", feature = "deadpool", feature = "mobc"))] {
-        use crate::db_pool::*;
         use diesel_async::pooled_connection::PoolableConnection;
         use std::ops::DerefMut;
     }
@@ -207,9 +206,7 @@ macro_rules! instrument_err {
 macro_rules! execute_query {
     ($self:expr, $query:expr $(,)?) => {{
         let query = $query;
-        instrument_err!(
-            $self.with_connection(move |connection| Box::pin(query.get_results(connection)))
-        )
+        instrument_err!($self.query(move |connection| Box::pin(query.get_results(connection))))
     }};
 }
 
@@ -234,7 +231,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         Self: 'r;
     type TxConnection<'r>: _Db<Backend = Self::Backend, AsyncConnection = Self::AsyncConnection>;
 
-    async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
         F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
             + Send
@@ -350,20 +347,21 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn get_page<'life0, 'async_trait, R, P, F>(
+    fn get_page<'life0, 'async_trait, 'query, R, P, F>(
         &'life0 self,
         page: P,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         P: Borrow<Page> + Debug + Send,
         R: Send + HasTable,
-        <R as HasTable>::Table: Table
-            + for<'query> IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        <R as HasTable>::Table:
+            Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
         F: Paginate + Send,
-        Paginated<<F as AsQuery>::Query>:
-            for<'query> LoadQuery<'query, Self::AsyncConnection, R> + Send,
+        <F as AsQuery>::Query: 'query,
+        Paginated<<F as AsQuery>::Query>: LoadQuery<'query, Self::AsyncConnection, R> + Send,
 
         'life0: 'async_trait,
+        'query: 'async_trait,
         R: 'async_trait,
         P: 'async_trait,
         F: 'async_trait,
@@ -377,7 +375,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn get_pages<'life0, 'async_trait, R, P, I, F>(
+    fn get_pages<'life0, 'async_trait, 'query, R, P, I, F>(
         &'life0 self,
         pages: I,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
@@ -386,13 +384,14 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         I: Debug + IntoIterator<Item = P> + Send,
         <I as IntoIterator>::IntoIter: Send,
         R: Send + HasTable,
-        <R as HasTable>::Table: Table
-            + for<'query> IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        <R as HasTable>::Table:
+            Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
         F: Paginate + Send,
-        Paginated<<F as AsQuery>::Query>:
-            for<'query> LoadQuery<'query, Self::AsyncConnection, R> + Send,
+        <F as AsQuery>::Query: 'query,
+        Paginated<<F as AsQuery>::Query>: LoadQuery<'query, Self::AsyncConnection, R> + Send,
 
         'life0: 'async_trait,
+        'query: 'async_trait,
         R: 'async_trait,
         P: 'async_trait,
         I: 'async_trait,
@@ -408,23 +407,23 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn insert<'life0, 'async_trait, 'v, R, I, U>(
+    fn insert<'life0, 'async_trait, 'query, 'v, R, I, U>(
         &'life0 self,
         values: I,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         U: HasTable + Send,
-        <U as HasTable>::Table: Table + QueryId + Send,
+        <U as HasTable>::Table: Table + QueryId + Send + 'query,
         <<U as HasTable>::Table as QuerySource>::FromClause: Send,
 
         I: IntoIterator<Item = U> + Send,
         Vec<U>: Insertable<<U as HasTable>::Table>,
-        <Vec<U> as Insertable<<U as HasTable>::Table>>::Values: Send,
+        <Vec<U> as Insertable<<U as HasTable>::Table>>::Values: Send + 'query,
         R: Send,
         InsertStatement<
             <U as HasTable>::Table,
             <Vec<U> as Insertable<<U as HasTable>::Table>>::Values,
-        >: for<'query> LoadQuery<'query, Self::AsyncConnection, R>,
+        >: LoadQuery<'query, Self::AsyncConnection, R>,
 
         R: Audit + Clone + Send,
         <R as Audit>::AuditRow: Send,
@@ -483,15 +482,15 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn insert_one<'life0, 'async_trait, 'v, R, I>(&'life0 self, value: I) -> BoxFuture<'async_trait, Result<R, Error>>
+    fn insert_one<'life0, 'async_trait, 'query, 'v, R, I>(&'life0 self, value: I) -> BoxFuture<'async_trait, Result<R, Error>>
     where
         I: HasTable + Insertable<<I as HasTable>::Table> + Send,
-        <I as Insertable<<I as HasTable>::Table>>::Values: Send,
-        <I as HasTable>::Table: Table + QueryId + Send,
+        <I as Insertable<<I as HasTable>::Table>>::Values: Send + 'query,
+        <I as HasTable>::Table: Table + QueryId + Send + 'query,
         <<I as HasTable>::Table as QuerySource>::FromClause: Send,
 
         InsertStatement<<I as HasTable>::Table, <I as Insertable<<I as HasTable>::Table>>::Values>:
-            for<'query> LoadQuery<'query, Self::AsyncConnection, R>,
+            LoadQuery<'query, Self::AsyncConnection, R>,
 
         R: Audit + Clone + Send,
         <R as Audit>::AuditRow: Send,
@@ -507,8 +506,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         <<R as Audit>::AuditRow as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
 
-        'v: 'async_trait + 'life0,
         'life0: 'async_trait,
+        'query: 'async_trait,
+        'v: 'async_trait + 'life0,
         R: 'async_trait,
         I: 'async_trait + 'v,
     {
@@ -535,27 +535,28 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn insert_without_audit<'life0, 'async_trait, 'v, R, I, U>(
+    fn insert_without_audit<'life0, 'async_trait, 'query, 'v, R, I, U>(
         &'life0 self,
         values: I,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         U: HasTable + Send,
-        <U as HasTable>::Table: Table + QueryId + Send,
+        <U as HasTable>::Table: Table + QueryId + Send + 'query,
         <<U as HasTable>::Table as QuerySource>::FromClause: Send,
 
         R: Send,
 
         I: IntoIterator<Item = U> + Send,
         Vec<U>: Insertable<<U as HasTable>::Table>,
-        <Vec<U> as Insertable<<U as HasTable>::Table>>::Values: Send,
+        <Vec<U> as Insertable<<U as HasTable>::Table>>::Values: Send + 'query,
         InsertStatement<
             <U as HasTable>::Table,
             <Vec<U> as Insertable<<U as HasTable>::Table>>::Values,
-        >: for<'query> LoadQuery<'query, Self::AsyncConnection, R>,
+        >: LoadQuery<'query, Self::AsyncConnection, R>,
 
-        'v: 'async_trait + 'life0,
         'life0: 'async_trait,
+        'query: 'async_trait,
+        'v: 'async_trait + 'life0,
         R: 'async_trait,
         I: 'async_trait + 'v,
         U: 'async_trait,
@@ -569,23 +570,24 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn insert_one_without_audit<'life0, 'async_trait, 'v, R, I>(
+    fn insert_one_without_audit<'life0, 'async_trait, 'query, 'v, R, I>(
         &'life0 self,
         value: I,
     ) -> BoxFuture<'async_trait, Result<R, Error>>
     where
         I: HasTable + Insertable<<I as HasTable>::Table> + Send,
-        <I as Insertable<<I as HasTable>::Table>>::Values: Send,
+        <I as Insertable<<I as HasTable>::Table>>::Values: Send + 'query,
 
         R: Send,
 
-        <I as HasTable>::Table: Table + QueryId + Send,
+        <I as HasTable>::Table: Table + QueryId + Send + 'query,
         <<I as HasTable>::Table as QuerySource>::FromClause: Send,
         InsertStatement<<I as HasTable>::Table, <I as Insertable<<I as HasTable>::Table>>::Values>:
-            for<'query> LoadQuery<'query, Self::AsyncConnection, R>,
+            LoadQuery<'query, Self::AsyncConnection, R>,
 
-        'v: 'async_trait + 'life0,
         'life0: 'async_trait,
+        'query: 'async_trait,
+        'v: 'async_trait + 'life0,
         R: 'async_trait,
         I: 'async_trait + 'v,
     {
@@ -596,24 +598,24 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn update<'life0, 'async_trait, 'v, R, I, U, T, Pk, F>(
+    fn update<'life0, 'async_trait, 'query, 'v, R, I, U, T, Pk, F>(
         &'life0 self,
         patches: I,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         U: AsChangeset<Target = T> + HasTable<Table = T> + IncludesChanges + Send + Sync,
         for<'a> &'a U: HasTable<Table = T> + Identifiable<Id = &'a Pk> + IntoUpdateTarget,
-        <U as AsChangeset>::Changeset: Send,
+        <U as AsChangeset>::Changeset: Send + 'query,
         for<'a> <&'a U as IntoUpdateTarget>::WhereClause: Send,
 
         ht::Find<T, Pk>: IntoUpdateTarget,
-        <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause: Send,
+        <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause: Send + 'query,
         ht::Update<ht::Find<T, Pk>, U>:
-            AsQuery + for<'query> LoadQuery<'query, Self::AsyncConnection, R> + Send,
+            AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
 
         Pk: AsExpression<SqlTypeOf<T::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
 
-        T: FindDsl<Pk> + Table + Send,
+        T: FindDsl<Pk> + Table + Send + 'query,
         ht::Find<T, Pk>: HasTable<Table = T> + Send,
         <T as QuerySource>::FromClause: Send,
 
@@ -639,14 +641,14 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             >>::Values,
         >: ExecuteDsl<Self::AsyncConnection>,
 
-        T: Table,
         T::PrimaryKey: Expression + ExpressionMethods,
         <T::PrimaryKey as Expression>::SqlType: SqlType,
         T: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, Vec<Pk>>, Output = F>,
-        F: for<'query> IsNotDeleted<'query, Self::AsyncConnection, R, R>,
+        F: IsNotDeleted<'query, Self::AsyncConnection, R, R>,
 
-        'v: 'async_trait + 'life0,
         'life0: 'async_trait,
+        'query: 'async_trait,
+        'v: 'async_trait + 'life0,
         R: 'async_trait,
         I: 'async_trait + 'v,
         U: 'async_trait,
@@ -728,7 +730,7 @@ impl<'d, D: _Db + Clone> _Db for Cow<'d, D> {
     type Connection<'r> = D::Connection<'r> where Self: 'r;
     type TxConnection<'r> = D::TxConnection<'r>;
 
-    async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
         F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
             + Send
@@ -736,7 +738,7 @@ impl<'d, D: _Db + Clone> _Db for Cow<'d, D> {
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a,
     {
-        (**self).with_connection(f).await
+        (**self).query(f).await
     }
 
     async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
@@ -781,7 +783,7 @@ impl<'d, D: _Db + Clone> _Db for &'d D {
     type Connection<'r> = D::Connection<'r> where Self: 'r;
     type TxConnection<'r> = D::TxConnection<'r>;
 
-    async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+    async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
         F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
             + Send
@@ -789,7 +791,7 @@ impl<'d, D: _Db + Clone> _Db for &'d D {
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a,
     {
-        (**self).with_connection(f).await
+        (**self).query(f).await
     }
 
     async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
@@ -839,7 +841,7 @@ cfg_if! {
             type Connection<'r> = PooledConnection<'r, C> where Self: 'r;
             type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
 
-            async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
             where
                 F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
                     + Send
@@ -949,7 +951,7 @@ cfg_if! {
             type Connection<'r> = &'d mut C where Self: 'r;
             type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
 
-            async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
             where
                 F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
                     + Send
@@ -1022,16 +1024,16 @@ cfg_if! {
         }
 
         #[async_trait]
-        impl<C> _Db for _DbPool<C>
+        impl<C> _Db for crate::Pool<C>
         where
-            C: AsyncSyncConnectionBridge + Sync + 'static,
+            C: AsyncPoolableConnection + Sync + 'static,
         {
             type Backend = <C as AsyncConnection>::Backend;
             type AsyncConnection = C;
             type Connection<'r> = PooledConnection<'r, C>;
             type TxConnection<'r> = Cow<'r, DbConnRef<'r, Self::AsyncConnection>>;
 
-            async fn with_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
             where
                 F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
                     + Send

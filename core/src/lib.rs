@@ -34,7 +34,7 @@ pub use schema::*;
 
 cfg_if! {
     if #[cfg(any(feature = "bb8", feature = "deadpool", feature = "mobc"))] {
-        mod db_pool;
-        pub use db_pool::*;
+        mod pool;
+        pub use pool::*;
     }
 }

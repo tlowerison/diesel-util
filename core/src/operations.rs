@@ -50,6 +50,12 @@ impl<E> DbEntityError<E> {
     }
 }
 
+impl From<DbEntityError<std::convert::Infallible>> for diesel::result::Error {
+    fn from(value: DbEntityError<std::convert::Infallible>) -> Self {
+        value.unwrap_db()
+    }
+}
+
 pub trait DbEntity: Sized + Send + 'static {
     /// an equivalent representation of this entity which has diesel trait implementations
     type Raw: Audit + Clone + HasTable<Table = Self::Table> + TryInto<Self> + Send + 'static;
@@ -70,7 +76,7 @@ pub trait DbEntity: Sized + Send + 'static {
 pub trait DbGet<D: _Db>: DbEntity {
     #[framed]
     #[instrument(skip(db, ids))]
-    async fn get<F>(
+    async fn get<'query, F>(
         db: &D,
         ids: impl IntoIterator<Item = Self::Id> + Send,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
@@ -83,7 +89,7 @@ pub trait DbGet<D: _Db>: DbEntity {
 
         Self::Table:
             FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
-        F: for<'query> IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
     {
         let ids = ids.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("ids", &*format!("{ids:?}"));
@@ -108,7 +114,7 @@ pub trait DbGet<D: _Db>: DbEntity {
 
     #[framed]
     #[instrument(skip(db))]
-    async fn get_one<F>(
+    async fn get_one<'query, F>(
         db: &D,
         id: Self::Id,
     ) -> Result<Self, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
@@ -121,7 +127,7 @@ pub trait DbGet<D: _Db>: DbEntity {
 
         Self::Table:
             FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, [Self::Id; 1]>, Output = F>,
-        F: for<'query> IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
     {
         let result: Result<Vec<Self::Raw>, _> = db.get([id]).await;
         match result {
@@ -141,7 +147,7 @@ pub trait DbGet<D: _Db>: DbEntity {
 
     #[framed]
     #[instrument(skip(db, values))]
-    async fn get_by_column<C, U, Q>(
+    async fn get_by_column<'query, C, U, Q>(
         db: &D,
         column: C,
         values: impl IntoIterator<Item = U> + Send,
@@ -152,10 +158,10 @@ pub trait DbGet<D: _Db>: DbEntity {
         C: Debug + Expression + ExpressionMethods + Send,
         SqlTypeOf<C>: SqlType,
 
-        Self::Table: for<'query> IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
-        for<'query> <Self::Table as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
+        Self::Table: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        <Self::Table as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
             FilterDsl<ht::EqAny<C, Vec<U>>, Output = Q>,
-        Q: Send + for<'query> LoadQuery<'query, D::AsyncConnection, Self::Raw>,
+        Q: Send + LoadQuery<'query, D::AsyncConnection, Self::Raw> + 'query,
     {
         let values = values.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("values", &*format!("{values:?}"));
@@ -176,7 +182,7 @@ pub trait DbGet<D: _Db>: DbEntity {
 
     #[framed]
     #[instrument(skip(db))]
-    async fn get_page<P, F>(
+    async fn get_page<'query, P, F>(
         db: &D,
         page: P,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
@@ -185,7 +191,7 @@ pub trait DbGet<D: _Db>: DbEntity {
         P: Borrow<Page> + Debug + Send,
 
         // Query bounds
-        Self::Table: for<'query> IsNotDeleted<
+        Self::Table: IsNotDeleted<
             'query,
             D::AsyncConnection,
             Self::Raw,
@@ -193,8 +199,9 @@ pub trait DbGet<D: _Db>: DbEntity {
             IsNotDeletedFilter = F,
         >,
         F: Paginate + Send,
+        <F as AsQuery>::Query: 'query,
         Paginated<<F as AsQuery>::Query>:
-            Send + for<'query> LoadQuery<'query, D::AsyncConnection, Self::Raw>,
+            Send + LoadQuery<'query, D::AsyncConnection, Self::Raw>,
     {
         if page.borrow().is_empty() {
             return Ok(vec![]);
@@ -215,7 +222,7 @@ pub trait DbGet<D: _Db>: DbEntity {
 
     #[framed]
     #[instrument(skip(db, pages))]
-    async fn get_pages<P, F>(
+    async fn get_pages<'query, P, F>(
         db: &D,
         pages: impl IntoIterator<Item = P> + Send,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
@@ -224,7 +231,7 @@ pub trait DbGet<D: _Db>: DbEntity {
         P: Borrow<Page> + Debug + for<'a> PageRef<'a> + Send,
 
         // Query bounds
-        Self::Table: for<'query> IsNotDeleted<
+        Self::Table: IsNotDeleted<
             'query,
             D::AsyncConnection,
             Self::Raw,
@@ -232,8 +239,9 @@ pub trait DbGet<D: _Db>: DbEntity {
             IsNotDeletedFilter = F,
         >,
         F: Paginate + Send,
+        <F as AsQuery>::Query: 'query,
         Paginated<<F as AsQuery>::Query>:
-            Send + for<'query> LoadQuery<'query, D::AsyncConnection, Self::Raw>,
+            Send + LoadQuery<'query, D::AsyncConnection, Self::Raw>,
     {
         let pages = pages.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("pages", &*format!("{pages:?}"));
@@ -264,11 +272,14 @@ pub trait DbInsert<D: _Db>: DbEntity {
 
     #[framed]
     #[instrument(skip(db, posts))]
-    async fn insert<'v>(
+    async fn insert<'query, 'v>(
         db: &D,
         posts: impl IntoIterator<Item = Self::PostHelper<'v>> + Send + 'v,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
+        D: 'query,
+        'v: 'query,
+
         <Self::Raw as TryInto<Self>>::Error: Send,
 
         // Insertable bounds
@@ -277,7 +288,7 @@ pub trait DbInsert<D: _Db>: DbEntity {
         <Self::Table as QuerySource>::FromClause: Send,
 
         // Insert bounds
-        for<'query> InsertStatement<Self::Table, <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values>:
+        InsertStatement<Self::Table, <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values>:
             LoadQuery<'query, D::AsyncConnection, Self::Raw>,
         InsertStatement<
             <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
@@ -338,11 +349,14 @@ pub trait DbSoftDelete<D: _Db>: DbEntity {
 
     #[framed]
     #[instrument(skip(db, delete_patches))]
-    async fn soft_delete<'v, F>(
+    async fn delete<'query, 'v, F>(
         db: &D,
         delete_patches: impl IntoIterator<Item = Self::DeletePatchHelper<'v>> + Send + 'v,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
+        D: 'query,
+        'v: 'query,
+
         // Id bounds
         Self::Id: Clone + Hash + Eq + Send + Sync,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
@@ -360,13 +374,13 @@ pub trait DbSoftDelete<D: _Db>: DbEntity {
         Self::Table: FindDsl<Self::Id>,
         ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
         <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
-        for<'query> ht::Update<ht::Find<Self::Table, Self::Id>, Self::DeletePatch<'v>>:
+        ht::Update<ht::Find<Self::Table, Self::Id>, Self::DeletePatch<'v>>:
             AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
 
         // Filter bounds for records whose changesets do not include any changes
         Self::Table:
             FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
-        for<'query> F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
 
         // Audit bounds
         Self::Raw: Audit + Clone,
@@ -430,12 +444,13 @@ pub trait DbUpdate<D: _Db>: DbEntity {
 
     #[framed]
     #[instrument(skip(db, patches))]
-    async fn update<'life0, 'v, F>(
-        db: &'life0 D,
+    async fn update<'query, 'v, F>(
+        db: &D,
         patches: impl IntoIterator<Item = Self::PatchHelper<'v>> + Send + 'v,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
-        'life0: 'v,
+        D: 'query,
+        'v: 'query,
 
         // Id bounds
         Self::Id: Clone + Hash + Eq + Send + Sync,
@@ -454,13 +469,13 @@ pub trait DbUpdate<D: _Db>: DbEntity {
         Self::Table: FindDsl<Self::Id>,
         ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
         <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
-        for<'query> ht::Update<ht::Find<Self::Table, Self::Id>, Self::Patch<'v>>:
+        ht::Update<ht::Find<Self::Table, Self::Id>, Self::Patch<'v>>:
             AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
 
         // Filter bounds for records whose changesets do not include any changes
         Self::Table:
             FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
-        for<'query> F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
 
         // Audit bounds
         Self::Raw: Audit + Clone,

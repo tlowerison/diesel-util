@@ -679,7 +679,6 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                 if num_changed_patches == 0 {
                     return Ok(vec![]);
                 }
-                // TODO: switch to parallel requests in the future -- requires DbConn to be cloneable
                 let mut all_updated = Vec::with_capacity(num_changed_patches);
                 for patch in patches.into_iter().filter(|patch| patch.includes_changes()) {
                     let record = diesel::update(U::table().find(patch.id().to_owned()))
@@ -699,6 +698,102 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                     .values(audit_posts)
                     .execute(db_conn)
                     .await?;
+
+                let filter = FilterDsl::filter(
+                    U::table(),
+                    U::table().primary_key().eq_any(no_change_patch_ids),
+                )
+                .is_not_deleted();
+                let unchanged_records = filter.get_results::<R>(&mut *db_conn).await?;
+
+                let mut all_records = unchanged_records
+                    .into_iter()
+                    .chain(all_updated.into_iter())
+                    .map(|record| (record.id().clone(), record))
+                    .collect::<HashMap<_, _>>();
+
+                Ok(ids
+                    .iter()
+                    .map(|id| all_records.remove(id).unwrap())
+                    .collect::<Vec<_>>())
+            }
+            .scope_boxed()
+        })
+    }
+
+    #[framed]
+    #[instrument(skip_all)]
+    fn update_without_audit<'life0, 'async_trait, 'query, 'v, R, I, U, T, Pk, F>(
+        &'life0 self,
+        patches: I,
+    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
+    where
+        U: AsChangeset<Target = T> + HasTable<Table = T> + IncludesChanges + Send + Sync,
+        for<'a> &'a U: HasTable<Table = T> + Identifiable<Id = &'a Pk> + IntoUpdateTarget,
+        <U as AsChangeset>::Changeset: Send + 'query,
+        for<'a> <&'a U as IntoUpdateTarget>::WhereClause: Send,
+
+        ht::Find<T, Pk>: IntoUpdateTarget,
+        <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause: Send + 'query,
+        ht::Update<ht::Find<T, Pk>, U>:
+            AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
+
+        Pk: AsExpression<SqlTypeOf<T::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
+
+        T: FindDsl<Pk> + Table + Send + 'query,
+        ht::Find<T, Pk>: HasTable<Table = T> + Send,
+        <T as QuerySource>::FromClause: Send,
+
+        I: IntoIterator<Item = U> + Send,
+        R: Send,
+        for<'a> &'a R: Identifiable<Id = &'a Pk>,
+
+        T::PrimaryKey: Expression + ExpressionMethods,
+        <T::PrimaryKey as Expression>::SqlType: SqlType,
+        T: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, Vec<Pk>>, Output = F>,
+        F: IsNotDeleted<'query, Self::AsyncConnection, R, R>,
+
+        'life0: 'async_trait,
+        'query: 'async_trait,
+        'v: 'async_trait + 'life0,
+        R: 'async_trait,
+        I: 'async_trait + 'v,
+        U: 'async_trait,
+        T: 'async_trait,
+        Pk: 'async_trait,
+        F: 'async_trait,
+    {
+        let patches = patches.into_iter().collect::<Vec<U>>();
+        let ids = patches
+            .iter()
+            .map(|patch| patch.id().clone())
+            .collect::<Vec<_>>();
+
+        self.raw_tx(move |db_conn| {
+            async move {
+                let no_change_patch_ids = patches
+                    .iter()
+                    .filter_map(|patch| {
+                        if !patch.includes_changes() {
+                            Some(patch.id().to_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                let num_changed_patches = ids.len() - no_change_patch_ids.len();
+                if num_changed_patches == 0 {
+                    return Ok(vec![]);
+                }
+                let mut all_updated = Vec::with_capacity(num_changed_patches);
+                for patch in patches.into_iter().filter(|patch| patch.includes_changes()) {
+                    let record = diesel::update(U::table().find(patch.id().to_owned()))
+                        .set(patch)
+                        .get_result::<R>(db_conn)
+                        .await?;
+                    all_updated.push(record);
+                }
 
                 let filter = FilterDsl::filter(
                     U::table(),

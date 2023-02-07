@@ -19,23 +19,18 @@ extern crate serde;
 extern crate tracing;
 
 mod connection;
-mod delete;
-mod error;
+mod is_deleted;
 mod macros;
-// mod operations;
+mod operations;
 mod paginate;
 mod schema;
-mod scoped;
 
 pub use connection::*;
-pub use delete::*;
-pub use diesel_util_proc_macros::*;
-pub use error::*;
+pub use is_deleted::*;
 pub use macros::*;
-// pub use operations::*;
+pub use operations::*;
 pub use paginate::*;
 pub use schema::*;
-pub use scoped::*;
 
 cfg_if! {
     if #[cfg(any(feature = "bb8", feature = "deadpool", feature = "mobc"))] {

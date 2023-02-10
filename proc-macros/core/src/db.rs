@@ -232,11 +232,29 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
         impl #db_impl_generics diesel_util::_Db for #ident #ty_generics #db_where_clause {
             type Backend = <#db_field_type as diesel_util::_Db>::Backend;
             type AsyncConnection = <#db_field_type as diesel_util::_Db>::AsyncConnection;
-            type Connection = <#db_field_type as diesel_util::_Db>::Connection;
+            type Connection<'r> = <#db_field_type as diesel_util::_Db>::Connection<'r> where Self: 'r;
             type TxConnection<#with_tx_connection_lifetime> = #tx_connection_type_constructor;
 
-            async fn connection(&self) -> Result<std::borrow::Cow<'_, std::sync::Arc<diesel_util::tokio::sync::RwLock<Self::Connection>>>, diesel::result::Error> {
-                self.#db_field_ident.connection().await
+            async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> diesel_util::scoped_futures::ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: std::fmt::Debug + From<diesel_util::diesel::result::Error> + Send + 'a,
+                T: Send + 'a
+            {
+                self.#db_field_ident.query(f).await
+            }
+
+            async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
+            where
+                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> diesel_util::scoped_futures::ScopedBoxFuture<'a, 'r, Result<T, E>>
+                    + Send
+                    + 'a,
+                E: std::fmt::Debug + From<diesel_util::diesel::result::Error> + Send + 'a,
+                T: Send + 'a
+            {
+                self.#db_field_ident.with_tx_connection(f).await
             }
 
             fn tx_id(&self) -> Option<diesel_util::uuid::Uuid> {
@@ -246,31 +264,22 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
             async fn tx_cleanup<F, E>(&self, f: F)
             where
                 F: for<'r> diesel_util::TxCleanupFn<'r, Self::AsyncConnection, E>,
-                E: Into<diesel_util::TxCleanupError> + 'static,
+                E: Into<diesel_util::TxCleanupError> + 'static
             {
                 self.#db_field_ident.tx_cleanup(f).await
             }
 
-            async fn tx<'s, 'a, T, E, F>(&'s self, callback: F) -> Result<T, E>
+            async fn tx<'life0, 'a, T, E, F>(&'life0 self, callback: F) -> Result<T, E>
             where
                 F: for<'r> diesel_util::TxFn<'a, Self::TxConnection<'r>, diesel_util::scoped_futures::ScopedBoxFuture<'a, 'r, Result<T, E>>>,
-                E: std::fmt::Debug + From<diesel::result::Error> + From<diesel_util::TxCleanupError> + Send + 'a,
+                E: std::fmt::Debug + From<diesel_util::diesel::result::Error> + From<diesel_util::TxCleanupError> + Send + 'a,
                 T: Send + 'a,
-                's: 'a,
+                'life0: 'a
             {
                 self.#db_field_ident.tx(|#tx_connection_input| {
                     let tx_connection = #tx_connection_constructor;
                     callback(tx_connection)
                 }).await
-            }
-
-            async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
-            where
-                F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> diesel_util::scoped_futures::ScopedBoxFuture<'a, 'r, Result<T, E>> + Send + 'a,
-                E: std::fmt::Debug + From<diesel::result::Error> + From<diesel_util::TxCleanupError> + Send + 'a,
-                T: Send + 'a,
-            {
-                self.#db_field_ident.raw_tx(callback).await
             }
         }
     };

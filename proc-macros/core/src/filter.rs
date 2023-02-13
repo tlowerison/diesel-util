@@ -329,57 +329,36 @@ impl Parse for ColumnComparison {
             let _token: Token![=] = parse_stream.parse()?;
             let operand: syn::Expr = parse_stream.parse()?;
             let operand_ty = get_operand_ty(&mut parse_stream)?;
-            Ok(Self::Equals {
-                operand,
-                operand_ty,
-            })
+            Ok(Self::Equals { operand, operand_ty })
         } else if parse_stream.peek(Token![>]) && parse_stream.peek2(Token![=]) {
             let _token: Token![>=] = parse_stream.parse()?;
             let operand: syn::Expr = parse_stream.parse()?;
             let operand_ty = get_operand_ty(&mut parse_stream)?;
-            Ok(Self::GreaterThanOrEqualTo {
-                operand,
-                operand_ty,
-            })
+            Ok(Self::GreaterThanOrEqualTo { operand, operand_ty })
         } else if parse_stream.peek(Token![>]) {
             let _token: Token![>] = parse_stream.parse()?;
             let operand: syn::Expr = parse_stream.parse()?;
             let operand_ty = get_operand_ty(&mut parse_stream)?;
-            Ok(Self::GreaterThan {
-                operand,
-                operand_ty,
-            })
+            Ok(Self::GreaterThan { operand, operand_ty })
         } else if parse_stream.peek(Token![<]) && parse_stream.peek2(Token![=]) {
             let _token: Token![<=] = parse_stream.parse()?;
             let operand: syn::Expr = parse_stream.parse()?;
             let operand_ty = get_operand_ty(&mut parse_stream)?;
-            Ok(Self::LessThanOrEqualTo {
-                operand,
-                operand_ty,
-            })
+            Ok(Self::LessThanOrEqualTo { operand, operand_ty })
         } else if parse_stream.peek(Token![<]) {
             let _token: Token![<] = parse_stream.parse()?;
             let operand: syn::Expr = parse_stream.parse()?;
             let operand_ty = get_operand_ty(&mut parse_stream)?;
-            Ok(Self::LessThan {
-                operand,
-                operand_ty,
-            })
+            Ok(Self::LessThan { operand, operand_ty })
         } else if parse_stream.peek(Token![!]) && parse_stream.peek(Token![=]) {
             let _token: Token![!=] = parse_stream.parse()?;
             let operand: syn::Expr = parse_stream.parse()?;
             let operand_ty = get_operand_ty(&mut parse_stream)?;
-            Ok(Self::NotEquals {
-                operand,
-                operand_ty,
-            })
+            Ok(Self::NotEquals { operand, operand_ty })
         } else if parse_stream.peek(syn::Ident) {
             let is: syn::Ident = parse_stream.parse()?;
             if &*format!("{is}") != "is" {
-                return Err(syn::Error::new(
-                    is.span(),
-                    INVALID_IDENT_COMPARISON_ERROR_MSG,
-                ));
+                return Err(syn::Error::new(is.span(), INVALID_IDENT_COMPARISON_ERROR_MSG));
             }
 
             if parse_stream.peek(syn::Ident) && parse_stream.peek2(syn::Ident) {
@@ -403,11 +382,7 @@ impl Parse for ColumnComparison {
                     }
                 } else {
                     Err(syn::Error::new(
-                        is.span()
-                            .join(not.span())
-                            .unwrap()
-                            .join(null.span())
-                            .unwrap(),
+                        is.span().join(not.span()).unwrap().join(null.span()).unwrap(),
                         INVALID_IDENT_COMPARISON_ERROR_MSG,
                     ))
                 }
@@ -543,70 +518,41 @@ impl DbFilterColumn {
             comparison,
         } = self;
         let uuid = Uuid::new_v4(); // prevents collisions on identifier names when multiple filters use the column (# number columns in filter * 2 ** -48 chance of collision)
-        let operand_ident =
-            format_ident!("_{column_name}_operand_{}", uuid.as_u128() >> (128 - 48));
+        let operand_ident = format_ident!("_{column_name}_operand_{}", uuid.as_u128() >> (128 - 48));
 
         let (comparison_call, operand_expr, operand_ty) = match comparison {
-            ColumnComparison::IsNotNull {
-                operand,
-                operand_ty,
-            } => (
-                quote! { #comparison() },
-                operand.as_ref(),
-                operand_ty.as_ref(),
-            ),
-            ColumnComparison::IsNull {
-                operand,
-                operand_ty,
-            } => (
-                quote! { #comparison() },
-                operand.as_ref(),
-                operand_ty.as_ref(),
-            ),
-            ColumnComparison::Equals {
-                operand,
-                operand_ty,
-            } => (
+            ColumnComparison::IsNotNull { operand, operand_ty } => {
+                (quote! { #comparison() }, operand.as_ref(), operand_ty.as_ref())
+            }
+            ColumnComparison::IsNull { operand, operand_ty } => {
+                (quote! { #comparison() }, operand.as_ref(), operand_ty.as_ref())
+            }
+            ColumnComparison::Equals { operand, operand_ty } => (
                 quote! { #comparison(#operand_ident.into_iter()) },
                 Some(operand),
                 operand_ty.as_ref(),
             ),
-            ColumnComparison::GreaterThan {
-                operand,
-                operand_ty,
-            } => (
+            ColumnComparison::GreaterThan { operand, operand_ty } => (
                 quote! { #comparison(#operand_ident) },
                 Some(operand),
                 operand_ty.as_ref(),
             ),
-            ColumnComparison::GreaterThanOrEqualTo {
-                operand,
-                operand_ty,
-            } => (
+            ColumnComparison::GreaterThanOrEqualTo { operand, operand_ty } => (
                 quote! { #comparison(#operand_ident) },
                 Some(operand),
                 operand_ty.as_ref(),
             ),
-            ColumnComparison::LessThan {
-                operand,
-                operand_ty,
-            } => (
+            ColumnComparison::LessThan { operand, operand_ty } => (
                 quote! { #comparison(#operand_ident) },
                 Some(operand),
                 operand_ty.as_ref(),
             ),
-            ColumnComparison::LessThanOrEqualTo {
-                operand,
-                operand_ty,
-            } => (
+            ColumnComparison::LessThanOrEqualTo { operand, operand_ty } => (
                 quote! { #comparison(#operand_ident) },
                 Some(operand),
                 operand_ty.as_ref(),
             ),
-            ColumnComparison::NotEquals {
-                operand,
-                operand_ty,
-            } => (
+            ColumnComparison::NotEquals { operand, operand_ty } => (
                 quote! { #comparison((&#operand_ident).into_iter()) },
                 Some(operand),
                 operand_ty.as_ref(),
@@ -666,12 +612,14 @@ impl DbFilterColumns<DbFilterSubJoin> {
         self.0
             .iter()
             .flat_map(|x| match x {
-                Left(db_filter_column) => {
-                    Left(std::iter::once(db_filter_column.filter(table_name)))
-                }
-                Right(db_filter_sub_join) => Right(db_filter_sub_join.1 .0.iter().flat_map(
-                    |(table_name, db_filter_columns)| db_filter_columns.filters(table_name),
-                )),
+                Left(db_filter_column) => Left(std::iter::once(db_filter_column.filter(table_name))),
+                Right(db_filter_sub_join) => Right(
+                    db_filter_sub_join
+                        .1
+                         .0
+                        .iter()
+                        .flat_map(|(table_name, db_filter_columns)| db_filter_columns.filters(table_name)),
+                ),
             })
             .collect()
     }
@@ -739,9 +687,7 @@ impl DbFilterJoin {
     fn filters(&self) -> Vec<Filter<'_>> {
         self.0
             .iter()
-            .flat_map(|(table_name, db_filter_columns)| {
-                db_filter_columns.filters(table_name).into_iter()
-            })
+            .flat_map(|(table_name, db_filter_columns)| db_filter_columns.filters(table_name).into_iter())
             .collect()
     }
 }
@@ -833,9 +779,8 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
         quote! { #base_query .into_boxed() }
     };
 
-    let needs_group_by_clause = inner_join.as_ref().map(|x| x.0.len()).unwrap_or(0)
-        + left_join.as_ref().map(|x| x.0.len()).unwrap_or(0)
-        > 0;
+    let needs_group_by_clause =
+        inner_join.as_ref().map(|x| x.0.len()).unwrap_or(0) + left_join.as_ref().map(|x| x.0.len()).unwrap_or(0) > 0;
 
     let group_by_clause = if needs_group_by_clause {
         if let Some(group_by) = group_by.as_ref() {
@@ -888,26 +833,18 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
         quote! {}
     };
 
-    let mut column_filters = columns
-        .as_ref()
-        .map(|x| x.filters(&table_name))
-        .unwrap_or_default();
+    let mut column_filters = columns.as_ref().map(|x| x.filters(&table_name)).unwrap_or_default();
 
-    let mut inner_join_column_filters =
-        inner_join.as_ref().map(|x| x.filters()).unwrap_or_default();
+    let mut inner_join_column_filters = inner_join.as_ref().map(|x| x.filters()).unwrap_or_default();
     let mut left_join_column_filters = left_join.as_ref().map(|x| x.filters()).unwrap_or_default();
 
-    let mut filters = Vec::with_capacity(
-        column_filters.len() + inner_join_column_filters.len() + left_join_column_filters.len(),
-    );
+    let mut filters =
+        Vec::with_capacity(column_filters.len() + inner_join_column_filters.len() + left_join_column_filters.len());
     filters.append(&mut column_filters);
     filters.append(&mut inner_join_column_filters);
     filters.append(&mut left_join_column_filters);
 
-    let filter_operand_statements: Vec<_> = filters
-        .iter()
-        .map(|filter| &filter.operand_statement)
-        .collect();
+    let filter_operand_statements: Vec<_> = filters.iter().map(|filter| &filter.operand_statement).collect();
     let filter_operand_statements = quote! { #(#filter_operand_statements)* };
 
     let NestedQuery {
@@ -1013,9 +950,7 @@ fn get_dynamic_query(
 
     for filter in filters {
         let Filter {
-            operand_ident,
-            clause,
-            ..
+            operand_ident, clause, ..
         } = &filter;
         tokens = match operand_ident {
             Some(operand_ident) => quote! {
@@ -1080,13 +1015,15 @@ fn get_static_query(
             .iter()
             .rev() // must reverse iterator since index set is ordered left to right against filter_index
             .enumerate()
-            .filter_map(|(i, filter)| {
-                if (filter_index_set >> i) % 2 == 1 {
-                    Some(&filter.clause)
-                } else {
-                    None
-                }
-            })
+            .filter_map(
+                |(i, filter)| {
+                    if (filter_index_set >> i) % 2 == 1 {
+                        Some(&filter.clause)
+                    } else {
+                        None
+                    }
+                },
+            )
             .collect();
         return NestedQuery {
             multipaginated: quote! {

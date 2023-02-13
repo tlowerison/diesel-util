@@ -27,18 +27,12 @@ pub fn derive_enum(item: TokenStream) -> Result<TokenStream, Error> {
     let ident = &ast.ident;
     let ident_str = format!("{ident}");
     let ident_snake = format_ident!("{}", ident.to_string().to_case(Case::Snake));
-    let mod_name = format_ident!(
-        "diesel_util_enum_{}",
-        ident.to_string().to_case(Case::Snake)
-    );
+    let mod_name = format_ident!("diesel_util_enum_{}", ident.to_string().to_case(Case::Snake));
 
     let data_enum = match &ast.data {
         syn::Data::Enum(data_enum) => data_enum,
         _ => {
-            return Err(Error::new_spanned(
-                ast,
-                "Enum can only be derived on enum types",
-            ));
+            return Err(Error::new_spanned(ast, "Enum can only be derived on enum types"));
         }
     };
 
@@ -75,7 +69,7 @@ pub fn derive_enum(item: TokenStream) -> Result<TokenStream, Error> {
         ));
         static_id_ident_strs.push(format!("{ident}::{}", variant.ident));
 
-        let lit_str: TokenStream = uuid_attrs[0].tokens.clone().into();
+        let lit_str: TokenStream = uuid_attrs[0].tokens.clone();
         static_id_lit_strs.push(parse2::<EnumAttribute>(lit_str)?.uuid_literal);
         variant_idents.push(&variant.ident);
     }

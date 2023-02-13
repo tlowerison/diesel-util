@@ -37,10 +37,7 @@ impl Parse for SoftDeleteAttribute {
             first = false;
         }
 
-        Ok(SoftDeleteAttribute {
-            db_entity,
-            deleted_at,
-        })
+        Ok(SoftDeleteAttribute { db_entity, deleted_at })
     }
 }
 
@@ -59,15 +56,14 @@ impl TryFrom<&syn::DeriveInput> for SoftDeleteAttribute {
 pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
     let ast: syn::DeriveInput = syn::parse2(tokens)?;
 
-    let diesel_attribute =
-        DieselAttribute::try_from(&ast).expect("SoftDelete could not parse `diesel` attribute");
-    let soft_delete_attribute = SoftDeleteAttribute::try_from(&ast)
-        .expect("SoftDelete could not parse `soft_delete` attribute");
+    let diesel_attribute = DieselAttribute::try_from(&ast).expect("SoftDelete could not parse `diesel` attribute");
+    let soft_delete_attribute =
+        SoftDeleteAttribute::try_from(&ast).expect("SoftDelete could not parse `soft_delete` attribute");
 
     let ident = &ast.ident;
-    let table_name = diesel_attribute.table_name.expect(
-        "SoftDelete was unable to extract table_name from a diesel(table_name = `...`) attribute",
-    );
+    let table_name = diesel_attribute
+        .table_name
+        .expect("SoftDelete was unable to extract table_name from a diesel(table_name = `...`) attribute");
     let deleted_at_column_name = soft_delete_attribute
         .deleted_at
         .unwrap_or_else(|| format_ident!("deleted_at"));
@@ -76,8 +72,7 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
         .db_entity
         .clone()
         .unwrap_or_else(|| parse_quote!(#ident));
-    let soft_delete_ident =
-        format_ident!("{}Delete", db_entity_path.segments.last().unwrap().ident);
+    let soft_delete_ident = format_ident!("{}Delete", db_entity_path.segments.last().unwrap().ident);
 
     let data_struct = match &ast.data {
         syn::Data::Struct(data_struct) => data_struct,
@@ -96,12 +91,7 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
         .find(|field| field.ident.as_ref() == Some(&primary_key))
     {
         Some(x) => x,
-        _ => {
-            return Err(Error::new_spanned(
-                ast,
-                "SoftDelete could not locate primary_key field",
-            ))
-        }
+        _ => return Err(Error::new_spanned(ast, "SoftDelete could not locate primary_key field")),
     };
 
     let primary_key_ty = &primary_key_field.ty;

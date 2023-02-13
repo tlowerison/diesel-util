@@ -39,10 +39,9 @@ cfg_if! {
 
 cfg_if! {
     if #[cfg(feature = "mobc")] {
-        pub trait AsyncPoolableConnection: AsyncConnection + PoolableConnection + mobc::Manager + 'static {}
+        pub trait AsyncPoolableConnection: AsyncConnection + PoolableConnection + 'static {}
     }
 }
-
 
 #[cfg(feature = "mysql")]
 impl AsyncPoolableConnection for diesel_async::AsyncMysqlConnection {}

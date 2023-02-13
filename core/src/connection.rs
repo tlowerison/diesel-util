@@ -140,7 +140,7 @@ cfg_if! {
         type PooledConnection<'a, C> = Connection<AsyncDieselConnectionManager<C>>;
         pub type DbConnOwned<'r, C> = DbConnection<C, Connection<AsyncDieselConnectionManager<C>>>;
 
-        impl<'a, C: PoolableConnection + mobc::Manager + 'static> From<PooledConnection<'a, C>> for DbConnOwned<'a, C> {
+        impl<'a, C: PoolableConnection + 'static> From<PooledConnection<'a, C>> for DbConnOwned<'a, C> {
             fn from(connection: PooledConnection<'a, C>) -> Self {
                 DbConnection {
                     tx_id: None,
@@ -233,17 +233,13 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>> + Send + 'a,
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a;
 
     async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>> + Send + 'a,
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a;
 
@@ -263,9 +259,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     async fn raw_tx<'a, T, E, F>(&self, callback: F) -> Result<T, E>
     where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>> + Send + 'a,
         E: Debug + From<Error> + From<TxCleanupError> + Send + 'a,
         T: Send + 'a,
     {
@@ -304,9 +298,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         }
         execute_query!(
             self,
-            R::table()
-                .filter(R::table().primary_key().eq_any(ids))
-                .is_not_deleted(),
+            R::table().filter(R::table().primary_key().eq_any(ids)).is_not_deleted(),
         )
         .boxed()
     }
@@ -354,8 +346,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     where
         P: Borrow<Page> + Debug + Send,
         R: Send + HasTable,
-        <R as HasTable>::Table:
-            Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        <R as HasTable>::Table: Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
         F: Paginate + Send,
         <F as AsQuery>::Query: 'query,
         Paginated<<F as AsQuery>::Query>: LoadQuery<'query, Self::AsyncConnection, R> + Send,
@@ -384,8 +375,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         I: Debug + IntoIterator<Item = P> + Send,
         <I as IntoIterator>::IntoIter: Send,
         R: Send + HasTable,
-        <R as HasTable>::Table:
-            Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        <R as HasTable>::Table: Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
         F: Paginate + Send,
         <F as AsQuery>::Query: 'query,
         Paginated<<F as AsQuery>::Query>: LoadQuery<'query, Self::AsyncConnection, R> + Send,
@@ -398,11 +388,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         F: 'async_trait,
         Self: 'life0,
     {
-        execute_query!(
-            self,
-            R::table().is_not_deleted().multipaginate(pages.into_iter()),
-        )
-        .boxed()
+        execute_query!(self, R::table().is_not_deleted().multipaginate(pages.into_iter()),).boxed()
     }
 
     #[framed]
@@ -419,10 +405,8 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         Vec<V>: Insertable<<V as HasTable>::Table>,
         <Vec<V> as Insertable<<V as HasTable>::Table>>::Values: Send + 'query,
         R: Send,
-        InsertStatement<
-            <V as HasTable>::Table,
-            <Vec<V> as Insertable<<V as HasTable>::Table>>::Values,
-        >: LoadQuery<'query, Self::AsyncConnection, R>,
+        InsertStatement<<V as HasTable>::Table, <Vec<V> as Insertable<<V as HasTable>::Table>>::Values>:
+            LoadQuery<'query, Self::AsyncConnection, R>,
 
         I: IntoIterator<Item = V> + Send,
 
@@ -435,14 +419,10 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         InsertStatement<
             <<R as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<R as Audit>::AuditRow> as Insertable<
-                <<R as Audit>::AuditTable as HasTable>::Table,
-            >>::Values,
+            <Vec<<R as Audit>::AuditRow> as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values,
         >: ExecuteDsl<Self::AsyncConnection>,
 
-        <Vec<<R as Audit>::AuditRow> as Insertable<
-            <<R as Audit>::AuditTable as HasTable>::Table,
-        >>::Values: Send,
+        <Vec<<R as Audit>::AuditRow> as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
 
         'v: 'async_trait + 'life0,
         'life0: 'async_trait,
@@ -483,7 +463,10 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn insert_one<'life0, 'async_trait, 'query, 'v, R, V>(&'life0 self, value: V) -> BoxFuture<'async_trait, Result<R, Error>>
+    fn insert_one<'life0, 'async_trait, 'query, 'v, R, V>(
+        &'life0 self,
+        value: V,
+    ) -> BoxFuture<'async_trait, Result<R, Error>>
     where
         V: HasTable + Send,
         <V as HasTable>::Table: Table + QueryId + Send + 'query,
@@ -492,10 +475,8 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         [V; 1]: Insertable<<V as HasTable>::Table>,
         <[V; 1] as Insertable<<V as HasTable>::Table>>::Values: Send + 'query,
         R: Send,
-        InsertStatement<
-            <V as HasTable>::Table,
-            <[V; 1] as Insertable<<V as HasTable>::Table>>::Values,
-        >: LoadQuery<'query, Self::AsyncConnection, R>,
+        InsertStatement<<V as HasTable>::Table, <[V; 1] as Insertable<<V as HasTable>::Table>>::Values>:
+            LoadQuery<'query, Self::AsyncConnection, R>,
 
         R: Audit + Clone + Send,
         <R as Audit>::AuditRow: Send,
@@ -506,14 +487,10 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         InsertStatement<
             <<R as Audit>::AuditTable as HasTable>::Table,
-            <[<R as Audit>::AuditRow; 1] as Insertable<
-                <<R as Audit>::AuditTable as HasTable>::Table,
-            >>::Values,
+            <[<R as Audit>::AuditRow; 1] as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values,
         >: ExecuteDsl<Self::AsyncConnection>,
 
-        <[<R as Audit>::AuditRow; 1] as Insertable<
-            <<R as Audit>::AuditTable as HasTable>::Table,
-        >>::Values: Send,
+        <[<R as Audit>::AuditRow; 1] as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
 
         'v: 'async_trait + 'life0,
         'life0: 'async_trait,
@@ -558,10 +535,8 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         I: IntoIterator<Item = V> + Send,
         Vec<V>: Insertable<<V as HasTable>::Table>,
         <Vec<V> as Insertable<<V as HasTable>::Table>>::Values: Send + 'query,
-        InsertStatement<
-            <V as HasTable>::Table,
-            <Vec<V> as Insertable<<V as HasTable>::Table>>::Values,
-        >: LoadQuery<'query, Self::AsyncConnection, R>,
+        InsertStatement<<V as HasTable>::Table, <Vec<V> as Insertable<<V as HasTable>::Table>>::Values>:
+            LoadQuery<'query, Self::AsyncConnection, R>,
 
         'life0: 'async_trait,
         'query: 'async_trait,
@@ -579,7 +554,10 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn insert_one_without_audit<'life0, 'async_trait, 'query, 'v, R, V>(&'life0 self, value: V) -> BoxFuture<'async_trait, Result<R, Error>>
+    fn insert_one_without_audit<'life0, 'async_trait, 'query, 'v, R, V>(
+        &'life0 self,
+        value: V,
+    ) -> BoxFuture<'async_trait, Result<R, Error>>
     where
         V: HasTable + Send,
         <V as HasTable>::Table: Table + QueryId + Send + 'query,
@@ -588,10 +566,8 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         [V; 1]: Insertable<<V as HasTable>::Table>,
         <[V; 1] as Insertable<<V as HasTable>::Table>>::Values: Send + 'query,
         R: Send,
-        InsertStatement<
-            <V as HasTable>::Table,
-            <[V; 1] as Insertable<<V as HasTable>::Table>>::Values,
-        >: LoadQuery<'query, Self::AsyncConnection, R>,
+        InsertStatement<<V as HasTable>::Table, <[V; 1] as Insertable<<V as HasTable>::Table>>::Values>:
+            LoadQuery<'query, Self::AsyncConnection, R>,
 
         'life0: 'async_trait,
         'query: 'async_trait,
@@ -603,8 +579,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         instrument_err!(self.raw_tx(move |db_conn| diesel::insert_into(V::table())
             .values([value])
             .get_result::<R>(db_conn)
-            .scope_boxed()
-        ))
+            .scope_boxed()))
         .boxed()
     }
 
@@ -622,8 +597,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         ht::Find<T, Pk>: IntoUpdateTarget,
         <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause: Send + 'query,
-        ht::Update<ht::Find<T, Pk>, V>:
-            AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
+        ht::Update<ht::Find<T, Pk>, V>: AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
 
         Pk: AsExpression<SqlTypeOf<T::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
 
@@ -642,15 +616,11 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             + UndecoratedInsertRecord<<<R as Audit>::AuditTable as HasTable>::Table>,
         <<R as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
         <<<R as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-        <Vec<<R as Audit>::AuditRow> as Insertable<
-            <<R as Audit>::AuditTable as HasTable>::Table,
-        >>::Values: Send,
+        <Vec<<R as Audit>::AuditRow> as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
 
         InsertStatement<
             <<R as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<R as Audit>::AuditRow> as Insertable<
-                <<R as Audit>::AuditTable as HasTable>::Table,
-            >>::Values,
+            <Vec<<R as Audit>::AuditRow> as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values,
         >: ExecuteDsl<Self::AsyncConnection>,
 
         T::PrimaryKey: Expression + ExpressionMethods,
@@ -669,22 +639,21 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         F: 'async_trait,
     {
         let patches = patches.into_iter().collect::<Vec<V>>();
-        let ids = patches
-            .iter()
-            .map(|patch| patch.id().clone())
-            .collect::<Vec<_>>();
+        let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
 
         self.raw_tx(move |db_conn| {
             async move {
                 let no_change_patch_ids = patches
                     .iter()
-                    .filter_map(|patch| {
-                        if !patch.includes_changes() {
-                            Some(patch.id().to_owned())
-                        } else {
-                            None
-                        }
-                    })
+                    .filter_map(
+                        |patch| {
+                            if !patch.includes_changes() {
+                                Some(patch.id().to_owned())
+                            } else {
+                                None
+                            }
+                        },
+                    )
                     .collect::<Vec<_>>();
 
                 let num_changed_patches = ids.len() - no_change_patch_ids.len();
@@ -700,22 +669,16 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                     all_updated.push(record);
                 }
 
-                let audit_posts: Vec<<R as Audit>::AuditRow> = all_updated
-                    .clone()
-                    .into_iter()
-                    .map(|record| record.into())
-                    .collect();
+                let audit_posts: Vec<<R as Audit>::AuditRow> =
+                    all_updated.clone().into_iter().map(|record| record.into()).collect();
 
                 diesel::insert_into(<<R as Audit>::AuditTable as HasTable>::table())
                     .values(audit_posts)
                     .execute(db_conn)
                     .await?;
 
-                let filter = FilterDsl::filter(
-                    V::table(),
-                    V::table().primary_key().eq_any(no_change_patch_ids),
-                )
-                .is_not_deleted();
+                let filter = FilterDsl::filter(V::table(), V::table().primary_key().eq_any(no_change_patch_ids))
+                    .is_not_deleted();
                 let unchanged_records = filter.get_results::<R>(&mut *db_conn).await?;
 
                 let mut all_records = unchanged_records
@@ -724,10 +687,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                     .map(|record| (record.id().clone(), record))
                     .collect::<HashMap<_, _>>();
 
-                Ok(ids
-                    .iter()
-                    .map(|id| all_records.remove(id).unwrap())
-                    .collect::<Vec<_>>())
+                Ok(ids.iter().map(|id| all_records.remove(id).unwrap()).collect::<Vec<_>>())
             }
             .scope_boxed()
         })
@@ -747,8 +707,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         ht::Find<T, Pk>: IntoUpdateTarget,
         <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause: Send + 'query,
-        ht::Update<ht::Find<T, Pk>, V>:
-            AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
+        ht::Update<ht::Find<T, Pk>, V>: AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
 
         Pk: AsExpression<SqlTypeOf<T::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
 
@@ -776,22 +735,21 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         F: 'async_trait,
     {
         let patches = patches.into_iter().collect::<Vec<V>>();
-        let ids = patches
-            .iter()
-            .map(|patch| patch.id().clone())
-            .collect::<Vec<_>>();
+        let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
 
         self.raw_tx(move |db_conn| {
             async move {
                 let no_change_patch_ids = patches
                     .iter()
-                    .filter_map(|patch| {
-                        if !patch.includes_changes() {
-                            Some(patch.id().to_owned())
-                        } else {
-                            None
-                        }
-                    })
+                    .filter_map(
+                        |patch| {
+                            if !patch.includes_changes() {
+                                Some(patch.id().to_owned())
+                            } else {
+                                None
+                            }
+                        },
+                    )
                     .collect::<Vec<_>>();
 
                 let num_changed_patches = ids.len() - no_change_patch_ids.len();
@@ -807,11 +765,8 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                     all_updated.push(record);
                 }
 
-                let filter = FilterDsl::filter(
-                    V::table(),
-                    V::table().primary_key().eq_any(no_change_patch_ids),
-                )
-                .is_not_deleted();
+                let filter = FilterDsl::filter(V::table(), V::table().primary_key().eq_any(no_change_patch_ids))
+                    .is_not_deleted();
                 let unchanged_records = filter.get_results::<R>(&mut *db_conn).await?;
 
                 let mut all_records = unchanged_records
@@ -820,10 +775,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                     .map(|record| (record.id().clone(), record))
                     .collect::<HashMap<_, _>>();
 
-                Ok(ids
-                    .iter()
-                    .map(|id| all_records.remove(id).unwrap())
-                    .collect::<Vec<_>>())
+                Ok(ids.iter().map(|id| all_records.remove(id).unwrap()).collect::<Vec<_>>())
             }
             .scope_boxed()
         })
@@ -839,9 +791,7 @@ impl<'d, D: _Db + Clone> _Db for Cow<'d, D> {
 
     async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>> + Send + 'a,
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a,
     {
@@ -850,9 +800,7 @@ impl<'d, D: _Db + Clone> _Db for Cow<'d, D> {
 
     async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>> + Send + 'a,
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a,
     {
@@ -892,9 +840,7 @@ impl<'d, D: _Db + Clone> _Db for &'d D {
 
     async fn query<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>> + Send + 'a,
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a,
     {
@@ -903,9 +849,7 @@ impl<'d, D: _Db + Clone> _Db for &'d D {
 
     async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
     where
-        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>>
-            + Send
-            + 'a,
+        F: for<'r> FnOnce(&'r mut Self::AsyncConnection) -> ScopedBoxFuture<'a, 'r, Result<T, E>> + Send + 'a,
         E: Debug + From<Error> + Send + 'a,
         T: Send + 'a,
     {

@@ -11,12 +11,7 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
 
     let data_struct = match &ast.data {
         syn::Data::Struct(data_struct) => data_struct,
-        _ => {
-            return Err(Error::new_spanned(
-                ast,
-                "Db can only be derived on struct types",
-            ))
-        }
+        _ => return Err(Error::new_spanned(ast, "Db can only be derived on struct types")),
     };
 
     let mut db_field_and_index: Option<(usize, &syn::Field)> = None;
@@ -60,16 +55,15 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
             let mut has_clone_bound = false;
             let mut has_send_bound = false;
             let mut has_sync_bound = false;
-            let is_param_exact_db_field_type =
-                if let syn::Type::Path(syn::TypePath { path, .. }) = db_field_type {
-                    if let Some(db_field_type_ident) = path.get_ident() {
-                        ident == db_field_type_ident
-                    } else {
-                        false
-                    }
+            let is_param_exact_db_field_type = if let syn::Type::Path(syn::TypePath { path, .. }) = db_field_type {
+                if let Some(db_field_type_ident) = path.get_ident() {
+                    ident == db_field_type_ident
                 } else {
                     false
-                };
+                }
+            } else {
+                false
+            };
 
             for bound in &*bounds {
                 if let syn::TypeParamBound::Trait(syn::TraitBound { path, .. }) = bound {
@@ -208,16 +202,15 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
     let mut tx_connection_type_constructor = quote!(#ident<);
     for param in ast.generics.params.iter() {
         if let syn::GenericParam::Type(syn::TypeParam { ident, .. }) = param {
-            let is_param_exact_db_field_type =
-                if let syn::Type::Path(syn::TypePath { path, .. }) = db_field_type {
-                    if let Some(db_field_type_ident) = path.get_ident() {
-                        ident == db_field_type_ident
-                    } else {
-                        false
-                    }
+            let is_param_exact_db_field_type = if let syn::Type::Path(syn::TypePath { path, .. }) = db_field_type {
+                if let Some(db_field_type_ident) = path.get_ident() {
+                    ident == db_field_type_ident
                 } else {
                     false
-                };
+                }
+            } else {
+                false
+            };
             if is_param_exact_db_field_type {
                 tx_connection_type_constructor = quote!(#tx_connection_type_constructor <#ident as diesel_util::_Db>::TxConnection<#with_tx_connection_lifetime>,);
             } else {

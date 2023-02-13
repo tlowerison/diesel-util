@@ -93,10 +93,7 @@ pub fn dynamic_schema(tokens: TokenStream) -> TokenStream {
         Err(_) => {
             return syn::parse::Error::new(
                 proc_macro2::Span::call_site(),
-                format!(
-                    "unable to parse file located at `{}`",
-                    schema_path.display()
-                ),
+                format!("unable to parse file located at `{}`", schema_path.display()),
             )
             .into_compile_error()
             .into()

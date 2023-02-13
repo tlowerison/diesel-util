@@ -1,9 +1,9 @@
 use diesel::dsl::{IsNotNull, IsNull};
 use diesel::sql_types::{Nullable, Timestamp};
 use diesel::{
-    backend::Backend, expression::ValidGrouping, expression_methods::ExpressionMethods,
-    helper_types::*, query_builder::*, query_dsl::methods::*, AppearsOnTable, Column, Expression,
-    QueryDsl, QueryResult, QuerySource, SelectableExpression,
+    backend::Backend, expression::ValidGrouping, expression_methods::ExpressionMethods, helper_types::*,
+    query_builder::*, query_dsl::methods::*, AppearsOnTable, Column, Expression, QueryDsl, QueryResult, QuerySource,
+    SelectableExpression,
 };
 use diesel_async::{methods::LoadQuery, AsyncConnection};
 use std::any::TypeId;
@@ -13,11 +13,17 @@ pub trait SoftDeletable {
     type DeletedAt: Default + Column<SqlType = Nullable<Timestamp>> + ExpressionMethods;
 }
 
-pub trait IsDeleted<'query, C, S, T>: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + Sized + 'query
+pub trait IsDeleted<'query, C, S, T>:
+    LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + Sized + 'query
 where
     C: AsyncConnection,
 {
-    type IsDeletedFilter: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query + From<Self> = Self;
+    type IsDeletedFilter: LoadQuery<'query, C, T>
+        + Send
+        + QueryId
+        + QueryFragment<<C as AsyncConnection>::Backend>
+        + 'query
+        + From<Self> = Self;
 
     #[allow(clippy::wrong_self_convention)]
     fn is_deleted(self) -> Self::IsDeletedFilter {
@@ -25,11 +31,17 @@ where
     }
 }
 
-pub trait IsNotDeleted<'query, C, S, T>: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + Sized + 'query
+pub trait IsNotDeleted<'query, C, S, T>:
+    LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + Sized + 'query
 where
     C: AsyncConnection,
 {
-    type IsNotDeletedFilter: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query + From<Self> = Self;
+    type IsNotDeletedFilter: LoadQuery<'query, C, T>
+        + Send
+        + QueryId
+        + QueryFragment<<C as AsyncConnection>::Backend>
+        + 'query
+        + From<Self> = Self;
 
     #[allow(clippy::wrong_self_convention)]
     fn is_not_deleted(self) -> Self::IsNotDeletedFilter {
@@ -61,20 +73,32 @@ where
 
 impl<'query, Q, C, S, T> IsDeleted<'query, C, S, T> for Q
 where
-    Q: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query + FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>>,
+    Q: LoadQuery<'query, C, T>
+        + Send
+        + QueryId
+        + QueryFragment<<C as AsyncConnection>::Backend>
+        + 'query
+        + FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>>,
     C: AsyncConnection,
     S: SoftDeletable,
-    IsDeletedFilter<'query, Q, S>: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
+    IsDeletedFilter<'query, Q, S>:
+        LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
 {
     type IsDeletedFilter = IsDeletedFilter<'query, Q, S>;
 }
 
 impl<'query, Q, C, S, T> IsNotDeleted<'query, C, S, T> for Q
 where
-    Q: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query + FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>>,
+    Q: LoadQuery<'query, C, T>
+        + Send
+        + QueryId
+        + QueryFragment<<C as AsyncConnection>::Backend>
+        + 'query
+        + FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>>,
     C: AsyncConnection,
     S: SoftDeletable,
-    IsNotDeletedFilter<'query, Q, S>: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
+    IsNotDeletedFilter<'query, Q, S>:
+        LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
 {
     type IsNotDeletedFilter = IsNotDeletedFilter<'query, Q, S>;
 }
@@ -247,11 +271,8 @@ where
     }
 }
 
-impl<
-        F: QueryId,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > QueryId for IsDeletedFilter<'_, Q, S>
+impl<F: QueryId, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> QueryId
+    for IsDeletedFilter<'_, Q, S>
 {
     type QueryId = <F as QueryId>::QueryId;
     const HAS_STATIC_QUERY_ID: bool = <F as QueryId>::HAS_STATIC_QUERY_ID;
@@ -259,11 +280,8 @@ impl<
         <F as QueryId>::query_id()
     }
 }
-impl<
-        F: QueryId,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > QueryId for IsNotDeletedFilter<'_, Q, S>
+impl<F: QueryId, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> QueryId
+    for IsNotDeletedFilter<'_, Q, S>
 {
     type QueryId = <F as QueryId>::QueryId;
     const HAS_STATIC_QUERY_ID: bool = <F as QueryId>::HAS_STATIC_QUERY_ID;
@@ -299,22 +317,16 @@ impl<
     }
 }
 
-impl<
-        F: DistinctDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > DistinctDsl for IsDeletedFilter<'_, Q, S>
+impl<F: DistinctDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> DistinctDsl
+    for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as DistinctDsl>::Output;
     fn distinct(self) -> Distinct<Self> {
         self.0.distinct()
     }
 }
-impl<
-        F: DistinctDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > DistinctDsl for IsNotDeletedFilter<'_, Q, S>
+impl<F: DistinctDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> DistinctDsl
+    for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as DistinctDsl>::Output;
     fn distinct(self) -> Distinct<Self> {
@@ -374,24 +386,16 @@ impl<
     }
 }
 
-impl<
-        PK,
-        F: FindDsl<PK>,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > FindDsl<PK> for IsDeletedFilter<'_, Q, S>
+impl<PK, F: FindDsl<PK>, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>>
+    FindDsl<PK> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as FindDsl<PK>>::Output;
     fn find(self, id: PK) -> Self::Output {
         self.0.find(id)
     }
 }
-impl<
-        PK,
-        F: FindDsl<PK>,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > FindDsl<PK> for IsNotDeletedFilter<'_, Q, S>
+impl<PK, F: FindDsl<PK>, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>>
+    FindDsl<PK> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as FindDsl<PK>>::Output;
     fn find(self, id: PK) -> Self::Output {
@@ -449,22 +453,16 @@ impl<
     }
 }
 
-impl<
-        F: LimitDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > LimitDsl for IsDeletedFilter<'_, Q, S>
+impl<F: LimitDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> LimitDsl
+    for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as LimitDsl>::Output;
     fn limit(self, limit: i64) -> Self::Output {
         self.0.limit(limit)
     }
 }
-impl<
-        F: LimitDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > LimitDsl for IsNotDeletedFilter<'_, Q, S>
+impl<F: LimitDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> LimitDsl
+    for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as LimitDsl>::Output;
     fn limit(self, limit: i64) -> Self::Output {
@@ -555,22 +553,16 @@ impl<
     }
 }
 
-impl<
-        F: OffsetDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > OffsetDsl for IsDeletedFilter<'_, Q, S>
+impl<F: OffsetDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> OffsetDsl
+    for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as OffsetDsl>::Output;
     fn offset(self, offset: i64) -> Self::Output {
         self.0.offset(offset)
     }
 }
-impl<
-        F: OffsetDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > OffsetDsl for IsNotDeletedFilter<'_, Q, S>
+impl<F: OffsetDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> OffsetDsl
+    for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as OffsetDsl>::Output;
     fn offset(self, offset: i64) -> Self::Output {
@@ -653,22 +645,16 @@ impl<
     }
 }
 
-impl<
-        F: SelectNullableDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > SelectNullableDsl for IsDeletedFilter<'_, Q, S>
+impl<F: SelectNullableDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>>
+    SelectNullableDsl for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as SelectNullableDsl>::Output;
     fn nullable(self) -> Self::Output {
         self.0.nullable()
     }
 }
-impl<
-        F: SelectNullableDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > SelectNullableDsl for IsNotDeletedFilter<'_, Q, S>
+impl<F: SelectNullableDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>>
+    SelectNullableDsl for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as SelectNullableDsl>::Output;
     fn nullable(self) -> Self::Output {
@@ -701,17 +687,11 @@ impl<
     }
 }
 
-impl<
-        F: QueryDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > QueryDsl for IsDeletedFilter<'_, Q, S>
+impl<F: QueryDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> QueryDsl
+    for IsDeletedFilter<'_, Q, S>
 {
 }
-impl<
-        F: QueryDsl,
-        S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
-    > QueryDsl for IsNotDeletedFilter<'_, Q, S>
+impl<F: QueryDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> QueryDsl
+    for IsNotDeletedFilter<'_, Q, S>
 {
 }

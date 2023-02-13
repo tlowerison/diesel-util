@@ -83,10 +83,7 @@ impl Parse for Schema {
     fn parse(parse_stream: ParseStream) -> syn::Result<Self> {
         let content: HasRef<'_, ParseBuffer>;
         let schema_name = SchemaName(
-            if parse_stream.peek(Token![pub])
-                && parse_stream.peek2(Token![mod])
-                && parse_stream.peek3(syn::Ident)
-            {
+            if parse_stream.peek(Token![pub]) && parse_stream.peek2(Token![mod]) && parse_stream.peek3(syn::Ident) {
                 let _pub: Token![pub] = parse_stream.parse()?;
                 let _mod: Token![mod] = parse_stream.parse()?;
                 let schema_name: syn::Ident = parse_stream.parse()?;
@@ -134,9 +131,7 @@ impl Parse for Schema {
                 _ => {
                     return Err(syn::Error::new_spanned(
                         macro_name,
-                        format!(
-                            "unable to parse diesel schema macros: unexpected macro `{macro_name}`"
-                        ),
+                        format!("unable to parse diesel schema macros: unexpected macro `{macro_name}`"),
                     ))
                 }
             };
@@ -182,16 +177,10 @@ impl Parse for Table {
             }
             let value_kind = match &*ty_str.to_lowercase() {
                 "bool" | "boolean" => ColumnValueKind::Bool,
-                "bigint" | "bigserial" | "int" | "int2" | "int4" | "int8" | "integer"
-                | "serial" | "serial2" | "serial4" | "serial8" | "smallInt" | "smallserial" => {
-                    ColumnValueKind::Int
-                }
-                "decimal" | "doubleprecision" | "float4" | "float8" | "numeric" | "real" => {
-                    ColumnValueKind::Float
-                }
-                "bytea" | "char" | "text" | "time" | "timetz" | "varchar" => {
-                    ColumnValueKind::String
-                }
+                "bigint" | "bigserial" | "int" | "int2" | "int4" | "int8" | "integer" | "serial" | "serial2"
+                | "serial4" | "serial8" | "smallInt" | "smallserial" => ColumnValueKind::Int,
+                "decimal" | "doubleprecision" | "float4" | "float8" | "numeric" | "real" => ColumnValueKind::Float,
+                "bytea" | "char" | "text" | "time" | "timetz" | "varchar" => ColumnValueKind::String,
                 _ => ColumnValueKind::None,
             };
 

@@ -64,15 +64,13 @@ impl TryFrom<&syn::DeriveInput> for AuditAttribute {
 pub fn derive_audit(tokens: TokenStream) -> Result<TokenStream, Error> {
     let ast: syn::DeriveInput = parse2(tokens)?;
 
-    let diesel_attribute =
-        DieselAttribute::try_from(&ast).expect("Audit could not parse `diesel` attribute");
-    let audit_attribute =
-        AuditAttribute::try_from(&ast).expect("Audit could not parse `audit` attribute");
+    let diesel_attribute = DieselAttribute::try_from(&ast).expect("Audit could not parse `diesel` attribute");
+    let audit_attribute = AuditAttribute::try_from(&ast).expect("Audit could not parse `audit` attribute");
 
     let struct_name = ast.ident.clone();
-    let table_name = diesel_attribute.table_name.expect(
-        "Audit was unable to extract table_name from a diesel(table_name = `...`) attribute",
-    );
+    let table_name = diesel_attribute
+        .table_name
+        .expect("Audit was unable to extract table_name from a diesel(table_name = `...`) attribute");
 
     let audit_struct_name = audit_attribute
         .struct_name
@@ -83,24 +81,18 @@ pub fn derive_audit(tokens: TokenStream) -> Result<TokenStream, Error> {
 
     let primary_key_name = get_primary_key(&ast);
 
-    let (mut field_names, mut field_types, mut field_attrs, mut field_vises): (
-        Vec<_>,
-        Vec<_>,
-        Vec<_>,
-        Vec<_>,
-    ) = match ast.data {
-        syn::Data::Struct(data_struct) => match data_struct.fields {
-            syn::Fields::Named(fields_named) => fields_named
-                .named
-                .into_iter()
-                .map(|field| (field.ident.unwrap(), field.ty, field.attrs, field.vis))
-                .multiunzip(),
-            _ => panic!(
-                "Audit can only be derived on struct data types with named fields at this time."
-            ),
-        },
-        _ => panic!("Audit can only be derived on struct data types at this time."),
-    };
+    let (mut field_names, mut field_types, mut field_attrs, mut field_vises): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) =
+        match ast.data {
+            syn::Data::Struct(data_struct) => match data_struct.fields {
+                syn::Fields::Named(fields_named) => fields_named
+                    .named
+                    .into_iter()
+                    .map(|field| (field.ident.unwrap(), field.ty, field.attrs, field.vis))
+                    .multiunzip(),
+                _ => panic!("Audit can only be derived on struct data types with named fields at this time."),
+            },
+            _ => panic!("Audit can only be derived on struct data types at this time."),
+        };
 
     let foreign_key = audit_attribute
         .foreign_key

@@ -103,8 +103,8 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
                 type DeletedAt = #table_name::#deleted_at_column_name;
             }
 
-            impl #impl_generics diesel_util::DbSoftDelete for #ident #ty_generics #where_clause {
-                type DeletePatchHelper<'a> = #primary_key_ty;
+            impl #impl_generics diesel_util::DbDelete for #ident #ty_generics #where_clause {
+                type DeletedAt = #table_name::#deleted_at_column_name;
                 type DeletePatch<'a> = #soft_delete_ident;
             }
         )
@@ -124,17 +124,18 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
             deleted_at: NaiveDateTime,
         }
 
-        impl From<#primary_key_ty> for #soft_delete_ident {
-            fn from(id: #primary_key_ty) -> Self {
-               Self {
-                    id,
+        impl<T: std::borrow::Borrow<#primary_key_ty> + Clone> From<T> for #soft_delete_ident {
+            fn from(id: T) -> Self {
+                use std::borrow::Borrow;
+                Self {
+                    id: id.borrow().clone(),
                     #deleted_at_column_name: Utc::now().naive_utc(),
                 }
             }
         }
 
-        impl diesel_util::DbSoftDelete for #db_entity_path {
-            type DeletePatchHelper<'a> = #primary_key_ty;
+        impl diesel_util::DbDelete for #db_entity_path {
+            type DeletedAt = #table_name::#deleted_at_column_name;
             type DeletePatch<'a> = #soft_delete_ident;
         }
 

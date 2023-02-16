@@ -18,14 +18,18 @@ extern crate serde;
 #[macro_use]
 extern crate tracing;
 
+mod audit;
 mod connection;
+mod deletable;
 mod is_deleted;
 mod macros;
 mod operations;
 mod paginate;
 mod schema;
 
+pub use audit::*;
 pub use connection::*;
+pub use deletable::*;
 pub use is_deleted::*;
 pub use macros::*;
 pub use operations::*;

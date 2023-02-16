@@ -1,20 +1,16 @@
+use crate::SoftDeletable;
 use diesel::dsl::{IsNotNull, IsNull};
-use diesel::sql_types::{Nullable, Timestamp};
 use diesel::{
     backend::Backend, expression::ValidGrouping, expression_methods::ExpressionMethods, helper_types::*,
-    query_builder::*, query_dsl::methods::*, AppearsOnTable, Column, Expression, QueryDsl, QueryResult, QuerySource,
+    query_builder::*, query_dsl::methods::*, AppearsOnTable, Expression, QueryDsl, QueryResult, QuerySource,
     SelectableExpression,
 };
 use diesel_async::{methods::LoadQuery, AsyncConnection};
-use std::any::TypeId;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 
-pub trait SoftDeletable {
-    type DeletedAt: Default + Column<SqlType = Nullable<Timestamp>> + ExpressionMethods;
-}
-
 pub trait IsDeleted<'query, C, S, T>:
-    LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + Sized + 'query
+    LoadQuery<'query, C, T> + Send + QueryFragment<<C as AsyncConnection>::Backend> + QueryId + Sized + 'query
 where
     C: AsyncConnection,
 {
@@ -32,7 +28,7 @@ where
 }
 
 pub trait IsNotDeleted<'query, C, S, T>:
-    LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + Sized + 'query
+    LoadQuery<'query, C, T> + QueryFragment<<C as AsyncConnection>::Backend> + QueryId + Send + Sized + 'query
 where
     C: AsyncConnection,
 {
@@ -51,7 +47,7 @@ where
 
 impl<'query, Q, C, S, T> IsDeleted<'query, C, S, T> for Q
 where
-    Q: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
+    Q: LoadQuery<'query, C, T> + QueryFragment<<C as AsyncConnection>::Backend> + QueryId + Send + 'query,
     C: AsyncConnection,
 {
     default type IsDeletedFilter = Self;
@@ -62,7 +58,7 @@ where
 
 impl<'query, Q, C, S, T> IsNotDeleted<'query, C, S, T> for Q
 where
-    Q: LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
+    Q: LoadQuery<'query, C, T> + Send + QueryFragment<<C as AsyncConnection>::Backend> + QueryId + 'query,
     C: AsyncConnection,
 {
     default type IsNotDeletedFilter = Self;
@@ -82,7 +78,7 @@ where
     C: AsyncConnection,
     S: SoftDeletable,
     IsDeletedFilter<'query, Q, S>:
-        LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
+        LoadQuery<'query, C, T> + Send + QueryFragment<<C as AsyncConnection>::Backend> + QueryId + 'query,
 {
     type IsDeletedFilter = IsDeletedFilter<'query, Q, S>;
 }
@@ -98,7 +94,7 @@ where
     C: AsyncConnection,
     S: SoftDeletable,
     IsNotDeletedFilter<'query, Q, S>:
-        LoadQuery<'query, C, T> + Send + QueryId + QueryFragment<<C as AsyncConnection>::Backend> + 'query,
+        LoadQuery<'query, C, T> + Send + QueryFragment<<C as AsyncConnection>::Backend> + QueryId + 'query,
 {
     type IsNotDeletedFilter = IsNotDeletedFilter<'query, Q, S>;
 }
@@ -276,7 +272,7 @@ impl<F: QueryId, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::
 {
     type QueryId = <F as QueryId>::QueryId;
     const HAS_STATIC_QUERY_ID: bool = <F as QueryId>::HAS_STATIC_QUERY_ID;
-    fn query_id() -> Option<TypeId> {
+    fn query_id() -> Option<std::any::TypeId> {
         <F as QueryId>::query_id()
     }
 }
@@ -285,7 +281,7 @@ impl<F: QueryId, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::Del
 {
     type QueryId = <F as QueryId>::QueryId;
     const HAS_STATIC_QUERY_ID: bool = <F as QueryId>::HAS_STATIC_QUERY_ID;
-    fn query_id() -> Option<TypeId> {
+    fn query_id() -> Option<std::any::TypeId> {
         <F as QueryId>::query_id()
     }
 }

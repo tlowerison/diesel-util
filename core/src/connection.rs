@@ -24,11 +24,6 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
 use uuid::Uuid;
 
-pub trait Audit: Into<Self::AuditRow> {
-    type AuditRow;
-    type AuditTable: HasTable;
-}
-
 pub trait IncludesChanges {
     fn includes_changes(&self) -> bool;
 }
@@ -216,7 +211,7 @@ macro_rules! execute_query {
 /// connection until the latest point possible, allowing other code paths (excepting
 /// for connections in transactions) to access the connection as well.
 /// At the moment, Db is passed in by value instead of reference into the transaction
-/// provided transaction wrapper so you'll need to use `&db_conn` instead of just `db_conn`.
+/// provided transaction wrapper so you'll need to use `&conn` instead of just `conn`.
 ///
 /// The trait is prefixed with _ to imply that applications using it will likely want to export
 /// their own trait alias for it with the appropriate backend specified -- otherwise generic
@@ -410,19 +405,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         I: IntoIterator<Item = V> + Send,
 
-        R: Audit + Clone + Send,
-        <R as Audit>::AuditRow: Send,
-        Vec<<R as Audit>::AuditRow>: Insertable<<<R as Audit>::AuditTable as HasTable>::Table>
-            + UndecoratedInsertRecord<<<R as Audit>::AuditTable as HasTable>::Table>,
-        <<R as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<R as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-
-        InsertStatement<
-            <<R as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<R as Audit>::AuditRow> as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values,
-        >: ExecuteDsl<Self::AsyncConnection>,
-
-        <Vec<<R as Audit>::AuditRow> as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
+        R: MaybeAudit<'query, Self::AsyncConnection>,
 
         'v: 'async_trait + 'life0,
         'life0: 'async_trait,
@@ -431,7 +414,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         V: 'async_trait,
         I: 'async_trait + 'v,
     {
-        instrument_err!(self.raw_tx(move |db_conn| {
+        instrument_err!(self.raw_tx(move |conn| {
             let values = values.into_iter().collect::<Vec<_>>();
             if values.is_empty() {
                 return Box::pin(ready(Ok(vec![])));
@@ -440,19 +423,10 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             async move {
                 let all_inserted = diesel::insert_into(V::table())
                     .values(values)
-                    .get_results::<R>(db_conn)
+                    .get_results::<R>(conn)
                     .await?;
 
-                let audit_posts: Vec<<R as Audit>::AuditRow> = all_inserted
-                    .clone()
-                    .into_iter()
-                    .map(|inserted| inserted.into())
-                    .collect();
-
-                diesel::insert_into(<<R as Audit>::AuditTable as HasTable>::table())
-                    .values(audit_posts)
-                    .execute(db_conn)
-                    .await?;
+                R::maybe_insert_audit_records(conn, &all_inserted).await?;
 
                 Ok(all_inserted)
             }
@@ -478,19 +452,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         InsertStatement<<V as HasTable>::Table, <[V; 1] as Insertable<<V as HasTable>::Table>>::Values>:
             LoadQuery<'query, Self::AsyncConnection, R>,
 
-        R: Audit + Clone + Send,
-        <R as Audit>::AuditRow: Send,
-        [<R as Audit>::AuditRow; 1]: Insertable<<<R as Audit>::AuditTable as HasTable>::Table>
-            + UndecoratedInsertRecord<<<R as Audit>::AuditTable as HasTable>::Table>,
-        <<R as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<R as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-
-        InsertStatement<
-            <<R as Audit>::AuditTable as HasTable>::Table,
-            <[<R as Audit>::AuditRow; 1] as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values,
-        >: ExecuteDsl<Self::AsyncConnection>,
-
-        <[<R as Audit>::AuditRow; 1] as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
+        R: MaybeAudit<'query, Self::AsyncConnection>,
 
         'v: 'async_trait + 'life0,
         'life0: 'async_trait,
@@ -498,88 +460,21 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         R: 'async_trait,
         V: 'async_trait,
     {
-        instrument_err!(self.raw_tx(move |db_conn| {
+        instrument_err!(self.raw_tx(move |conn| {
             async move {
                 let inserted = diesel::insert_into(V::table())
                     .values([value])
-                    .get_result::<R>(db_conn)
+                    .get_result::<R>(conn)
                     .await?;
 
-                let audit_post: <R as Audit>::AuditRow = inserted.clone().into();
-
-                diesel::insert_into(<<R as Audit>::AuditTable as HasTable>::table())
-                    .values([audit_post])
-                    .execute(db_conn)
-                    .await?;
+                let inserted = [inserted];
+                R::maybe_insert_audit_records(conn, &inserted).await?;
+                let [inserted] = inserted;
 
                 Ok(inserted)
             }
             .scope_boxed()
         }))
-        .boxed()
-    }
-
-    #[framed]
-    #[instrument(skip_all)]
-    fn insert_without_audit<'life0, 'async_trait, 'query, 'v, R, V, I>(
-        &'life0 self,
-        values: I,
-    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
-    where
-        V: HasTable + Send,
-        <V as HasTable>::Table: Table + QueryId + Send + 'query,
-        <<V as HasTable>::Table as QuerySource>::FromClause: Send,
-
-        R: Send,
-
-        I: IntoIterator<Item = V> + Send,
-        Vec<V>: Insertable<<V as HasTable>::Table>,
-        <Vec<V> as Insertable<<V as HasTable>::Table>>::Values: Send + 'query,
-        InsertStatement<<V as HasTable>::Table, <Vec<V> as Insertable<<V as HasTable>::Table>>::Values>:
-            LoadQuery<'query, Self::AsyncConnection, R>,
-
-        'life0: 'async_trait,
-        'query: 'async_trait,
-        'v: 'async_trait + 'life0,
-        R: 'async_trait,
-        V: 'async_trait,
-        I: 'async_trait + 'v,
-    {
-        let values = values.into_iter().collect::<Vec<_>>();
-        if values.is_empty() {
-            return Box::pin(ready(Ok(vec![])));
-        }
-        execute_query!(self, diesel::insert_into(V::table()).values(values),).boxed()
-    }
-
-    #[framed]
-    #[instrument(skip_all)]
-    fn insert_one_without_audit<'life0, 'async_trait, 'query, 'v, R, V>(
-        &'life0 self,
-        value: V,
-    ) -> BoxFuture<'async_trait, Result<R, Error>>
-    where
-        V: HasTable + Send,
-        <V as HasTable>::Table: Table + QueryId + Send + 'query,
-        <<V as HasTable>::Table as QuerySource>::FromClause: Send,
-
-        [V; 1]: Insertable<<V as HasTable>::Table>,
-        <[V; 1] as Insertable<<V as HasTable>::Table>>::Values: Send + 'query,
-        R: Send,
-        InsertStatement<<V as HasTable>::Table, <[V; 1] as Insertable<<V as HasTable>::Table>>::Values>:
-            LoadQuery<'query, Self::AsyncConnection, R>,
-
-        'life0: 'async_trait,
-        'query: 'async_trait,
-        'v: 'async_trait + 'life0,
-        Self: 'life0,
-        R: 'async_trait,
-        V: 'async_trait,
-    {
-        instrument_err!(self.raw_tx(move |db_conn| diesel::insert_into(V::table())
-            .values([value])
-            .get_result::<R>(db_conn)
-            .scope_boxed()))
         .boxed()
     }
 
@@ -609,19 +504,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         R: Send,
         for<'a> &'a R: Identifiable<Id = &'a Pk>,
 
-        // Audit bounds
-        R: Audit + Clone,
-        <R as Audit>::AuditRow: Send,
-        Vec<<R as Audit>::AuditRow>: Insertable<<<R as Audit>::AuditTable as HasTable>::Table>
-            + UndecoratedInsertRecord<<<R as Audit>::AuditTable as HasTable>::Table>,
-        <<R as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<R as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-        <Vec<<R as Audit>::AuditRow> as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
-
-        InsertStatement<
-            <<R as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<R as Audit>::AuditRow> as Insertable<<<R as Audit>::AuditTable as HasTable>::Table>>::Values,
-        >: ExecuteDsl<Self::AsyncConnection>,
+        R: MaybeAudit<'query, Self::AsyncConnection>,
 
         T::PrimaryKey: Expression + ExpressionMethods,
         <T::PrimaryKey as Expression>::SqlType: SqlType,
@@ -641,7 +524,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         let patches = patches.into_iter().collect::<Vec<V>>();
         let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
 
-        self.raw_tx(move |db_conn| {
+        instrument_err!(self.raw_tx(move |conn| {
             async move {
                 let no_change_patch_ids = patches
                     .iter()
@@ -664,22 +547,16 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                 for patch in patches.into_iter().filter(|patch| patch.includes_changes()) {
                     let record = diesel::update(V::table().find(patch.id().to_owned()))
                         .set(patch)
-                        .get_result::<R>(db_conn)
+                        .get_result::<R>(conn)
                         .await?;
                     all_updated.push(record);
                 }
 
-                let audit_posts: Vec<<R as Audit>::AuditRow> =
-                    all_updated.clone().into_iter().map(|record| record.into()).collect();
-
-                diesel::insert_into(<<R as Audit>::AuditTable as HasTable>::table())
-                    .values(audit_posts)
-                    .execute(db_conn)
-                    .await?;
+                R::maybe_insert_audit_records(conn, &all_updated).await?;
 
                 let filter = FilterDsl::filter(V::table(), V::table().primary_key().eq_any(no_change_patch_ids))
                     .is_not_deleted();
-                let unchanged_records = filter.get_results::<R>(&mut *db_conn).await?;
+                let unchanged_records = filter.get_results::<R>(&mut *conn).await?;
 
                 let mut all_records = unchanged_records
                     .into_iter()
@@ -690,95 +567,8 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                 Ok(ids.iter().map(|id| all_records.remove(id).unwrap()).collect::<Vec<_>>())
             }
             .scope_boxed()
-        })
-    }
-
-    #[framed]
-    #[instrument(skip_all)]
-    fn update_without_audit<'life0, 'async_trait, 'query, 'v, R, V, I, T, Pk, F>(
-        &'life0 self,
-        patches: I,
-    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
-    where
-        V: AsChangeset<Target = T> + HasTable<Table = T> + IncludesChanges + Send + Sync,
-        for<'a> &'a V: HasTable<Table = T> + Identifiable<Id = &'a Pk> + IntoUpdateTarget,
-        <V as AsChangeset>::Changeset: Send + 'query,
-        for<'a> <&'a V as IntoUpdateTarget>::WhereClause: Send,
-
-        ht::Find<T, Pk>: IntoUpdateTarget,
-        <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause: Send + 'query,
-        ht::Update<ht::Find<T, Pk>, V>: AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
-
-        Pk: AsExpression<SqlTypeOf<T::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
-
-        T: FindDsl<Pk> + Table + Send + 'query,
-        ht::Find<T, Pk>: HasTable<Table = T> + Send,
-        <T as QuerySource>::FromClause: Send,
-
-        I: IntoIterator<Item = V> + Send,
-        R: Send,
-        for<'a> &'a R: Identifiable<Id = &'a Pk>,
-
-        T::PrimaryKey: Expression + ExpressionMethods,
-        <T::PrimaryKey as Expression>::SqlType: SqlType,
-        T: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, Vec<Pk>>, Output = F>,
-        F: IsNotDeleted<'query, Self::AsyncConnection, R, R>,
-
-        'life0: 'async_trait,
-        'query: 'async_trait,
-        'v: 'async_trait + 'life0,
-        R: 'async_trait,
-        V: 'async_trait,
-        I: 'async_trait + 'v,
-        T: 'async_trait,
-        Pk: 'async_trait,
-        F: 'async_trait,
-    {
-        let patches = patches.into_iter().collect::<Vec<V>>();
-        let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
-
-        self.raw_tx(move |db_conn| {
-            async move {
-                let no_change_patch_ids = patches
-                    .iter()
-                    .filter_map(
-                        |patch| {
-                            if !patch.includes_changes() {
-                                Some(patch.id().to_owned())
-                            } else {
-                                None
-                            }
-                        },
-                    )
-                    .collect::<Vec<_>>();
-
-                let num_changed_patches = ids.len() - no_change_patch_ids.len();
-                if num_changed_patches == 0 {
-                    return Ok(vec![]);
-                }
-                let mut all_updated = Vec::with_capacity(num_changed_patches);
-                for patch in patches.into_iter().filter(|patch| patch.includes_changes()) {
-                    let record = diesel::update(V::table().find(patch.id().to_owned()))
-                        .set(patch)
-                        .get_result::<R>(db_conn)
-                        .await?;
-                    all_updated.push(record);
-                }
-
-                let filter = FilterDsl::filter(V::table(), V::table().primary_key().eq_any(no_change_patch_ids))
-                    .is_not_deleted();
-                let unchanged_records = filter.get_results::<R>(&mut *db_conn).await?;
-
-                let mut all_records = unchanged_records
-                    .into_iter()
-                    .chain(all_updated.into_iter())
-                    .map(|record| (record.id().clone(), record))
-                    .collect::<HashMap<_, _>>();
-
-                Ok(ids.iter().map(|id| all_records.remove(id).unwrap()).collect::<Vec<_>>())
-            }
-            .scope_boxed()
-        })
+        }))
+        .boxed()
     }
 }
 

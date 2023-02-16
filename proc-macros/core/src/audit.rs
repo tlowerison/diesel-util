@@ -160,8 +160,8 @@ pub fn derive_audit(tokens: TokenStream) -> Result<TokenStream, Error> {
         }
 
         impl diesel_util::Audit for #struct_name {
-            type AuditRow = #audit_struct_name;
-            type AuditTable = #audit_struct_name;
+            type Raw = #audit_struct_name;
+            type Table = #audit_struct_name;
         }
     };
 

@@ -11,7 +11,9 @@ use diesel::sql_types::SqlType;
 use diesel::{query_builder::*, Identifiable};
 use diesel::{Insertable, Table};
 use diesel_async::methods::*;
+use either::Either;
 use futures::future::FutureExt;
+use scoped_futures::ScopedFutureExt;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -260,8 +262,8 @@ pub trait DbGet: DbEntity {
 
 #[async_trait]
 pub trait DbInsert: DbEntity {
-    type PostHelper<'a>: Debug + Into<Self::Post<'a>> + Send = Self::Post<'a>;
-    type Post<'a>: Debug + HasTable<Table = Self::Table> + Send;
+    type PostHelper<'v>: Debug + Into<Self::Post<'v>> + Send = Self::Post<'v>;
+    type Post<'v>: Debug + HasTable<Table = Self::Table> + Send;
 
     #[framed]
     #[instrument(skip_all)]
@@ -275,33 +277,17 @@ pub trait DbInsert: DbEntity {
 
         <Self::Raw as TryInto<Self>>::Error: Send,
 
-    // Insertable bounds
+        // Insertable bounds
         Vec<Self::Post<'v>>: Insertable<Self::Table> + Send,
         <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values: Send,
         <Self::Table as QuerySource>::FromClause: Send,
 
-    // Insert bounds
+        // Insert bounds
         InsertStatement<Self::Table, <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values>:
             LoadQuery<'query, D::AsyncConnection, Self::Raw>,
 
-    // Audit bounds
-        Self::Raw: Audit + Clone,
-        <Self::Raw as Audit>::AuditRow: Send,
-        Vec<<Self::Raw as Audit>::AuditRow>: Insertable<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>
-            + UndecoratedInsertRecord<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>,
-        <<Self::Raw as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<Self::Raw as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-        <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-        >>::Values: Send,
-
-    // Insert Audit bounds
-        InsertStatement<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-                <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            >>::Values,
-        >: ExecuteDsl<D::AsyncConnection>,
+        // Audit bounds
+        Self::Raw: MaybeAudit<'query, D::AsyncConnection>,
     {
         let db_post_helpers = posts.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("posts", &*format!("{db_post_helpers:?}"));
@@ -344,28 +330,17 @@ pub trait DbInsert: DbEntity {
 
         <Self::Raw as TryInto<Self>>::Error: Send,
 
-    // Insertable bounds
+        // Insertable bounds
         [Self::Post<'v>; 1]: HasTable + Insertable<Self::Table> + Send,
         <[Self::Post<'v>; 1] as Insertable<Self::Table>>::Values: Send + 'query,
         <Self::Table as QuerySource>::FromClause: Send,
 
-    // Insert bounds
-        InsertStatement<Self::Table, <[Self::Post<'v>; 1] as Insertable<Self::Table>>::Values>: LoadQuery<'query, D::AsyncConnection, Self::Raw>,
+        // Insert bounds
+        InsertStatement<Self::Table, <[Self::Post<'v>; 1] as Insertable<Self::Table>>::Values>:
+            LoadQuery<'query, D::AsyncConnection, Self::Raw>,
 
-    // Audit bounds
-        Self::Raw: Audit + Clone + Send,
-        <Self::Raw as Audit>::AuditRow: Send,
-        [<Self::Raw as Audit>::AuditRow; 1]: Insertable<<<Self::Raw as Audit>::AuditTable as HasTable>::Table> + UndecoratedInsertRecord<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>,
-        <<Self::Raw as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<Self::Raw as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-
-    // Insert Audit bounds
-        InsertStatement<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            <[<Self::Raw as Audit>::AuditRow; 1] as Insertable<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>>::Values,
-        >: ExecuteDsl<D::AsyncConnection>,
-
-        <[<Self::Raw as Audit>::AuditRow; 1] as Insertable<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>>::Values: Send,
+        // Audit bounds
+        Self::Raw: MaybeAudit<'query, D::AsyncConnection>,
     {
         tracing::Span::current().record("post", &*format!("{post:?}"));
 
@@ -382,258 +357,13 @@ pub trait DbInsert: DbEntity {
             .map_err(DbEntityError::from)
             .and_then(|record| record.try_into().map_err(DbEntityError::conversion))
     }
-
-    #[framed]
-    #[instrument(skip_all)]
-    async fn insert_without_audit<'query, 'v, D>(
-        db: &D,
-        posts: impl IntoIterator<Item = Self::PostHelper<'v>> + Send + 'v,
-    ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
-    where
-        D: _Db + 'query,
-        'v: 'query,
-
-        <Self::Raw as TryInto<Self>>::Error: Send,
-
-        // Insertable bounds
-        Vec<Self::Post<'v>>: Insertable<Self::Table> + Send,
-        <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values: Send,
-        <Self::Table as QuerySource>::FromClause: Send,
-
-        // Insert bounds
-        InsertStatement<Self::Table, <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values>:
-            LoadQuery<'query, D::AsyncConnection, Self::Raw>,
-    {
-        let db_post_helpers = posts.into_iter().collect::<Vec<_>>();
-        tracing::Span::current().record("posts", &*format!("{db_post_helpers:?}"));
-
-        if db_post_helpers.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let db_posts = db_post_helpers.into_iter().map(Self::PostHelper::into);
-
-        db.insert_without_audit(db_posts)
-            .map(|result| match result {
-                Ok(records) => Ok(records),
-                Err(err) => {
-                    let err = err;
-                    error!(target: module_path!(), error = %err);
-                    Err(err)
-                }
-            })
-            .await
-            .map_err(DbEntityError::from)
-            .and_then(|records| {
-                records
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_, _>>()
-                    .map_err(DbEntityError::conversion)
-            })
-    }
-
-    #[framed]
-    #[instrument(skip_all)]
-    async fn insert_one_without_audit<'query, 'v, D>(
-        db: &D,
-        post: Self::PostHelper<'v>,
-    ) -> Result<Self, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
-    where
-        D: _Db + 'query,
-        'v: 'query,
-
-        <Self::Raw as TryInto<Self>>::Error: Send,
-
-        // Insertable bounds
-        [Self::Post<'v>; 1]: HasTable + Insertable<Self::Table> + Send,
-        <[Self::Post<'v>; 1] as Insertable<Self::Table>>::Values: Send + 'query,
-        <Self::Table as QuerySource>::FromClause: Send,
-
-        // Insert bounds
-        InsertStatement<Self::Table, <[Self::Post<'v>; 1] as Insertable<Self::Table>>::Values>:
-            LoadQuery<'query, D::AsyncConnection, Self::Raw>,
-    {
-        tracing::Span::current().record("post", &*format!("{post:?}"));
-
-        db.insert_one_without_audit(post.into())
-            .map(|result| match result {
-                Ok(record) => Ok(record),
-                Err(err) => {
-                    let err = err;
-                    error!(target: module_path!(), error = %err);
-                    Err(err)
-                }
-            })
-            .await
-            .map_err(DbEntityError::from)
-            .and_then(|record| record.try_into().map_err(DbEntityError::conversion))
-    }
-}
-
-#[async_trait]
-pub trait DbSoftDelete: DbEntity {
-    type DeletePatchHelper<'a>: Debug + Into<Self::DeletePatch<'a>> + Send = Self::DeletePatch<'a>;
-    type DeletePatch<'a>: AsChangeset<Target = Self::Table>
-        + Debug
-        + HasTable<Table = Self::Table>
-        + IncludesChanges
-        + Send
-        + Sync;
-
-    #[framed]
-    #[instrument(skip_all)]
-    async fn delete<'query, 'v, D, F>(
-        db: &D,
-        patches: impl IntoIterator<Item = Self::DeletePatchHelper<'v>> + Send + 'v,
-    ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
-    where
-        D: _Db + 'query,
-        'v: 'query,
-
-    // Id bounds
-        Self::Id: Clone + Hash + Eq + Send + Sync,
-        for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
-        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
-        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
-
-    // Changeset bounds
-        <Self::DeletePatch<'v> as AsChangeset>::Changeset: Send,
-        for<'a> &'a Self::DeletePatch<'v>:
-            HasTable<Table = Self::Table> + Identifiable<Id = &'a Self::Id> + IntoUpdateTarget,
-        for<'a> <&'a Self::DeletePatch<'v> as IntoUpdateTarget>::WhereClause: Send,
-        <Self::Table as QuerySource>::FromClause: Send,
-
-    // UpdateStatement bounds
-        Self::Table: FindDsl<Self::Id>,
-        ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
-        <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
-        ht::Update<ht::Find<Self::Table, Self::Id>, Self::DeletePatch<'v>>:
-            AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
-
-    // Filter bounds for records whose changesets do not include any changes
-        Self::Table:
-            FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
-        F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
-
-    // Audit bounds
-        Self::Raw: Audit + Clone,
-        <Self::Raw as Audit>::AuditRow: Send,
-        Vec<<Self::Raw as Audit>::AuditRow>: Insertable<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>
-            + UndecoratedInsertRecord<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>,
-        <<Self::Raw as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<Self::Raw as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-        <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-        >>::Values: Send,
-        InsertStatement<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-                <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            >>::Values,
-        >: ExecuteDsl<D::AsyncConnection>,
-    {
-        let db_delete_patch_helpers = patches.into_iter().collect::<Vec<_>>();
-        tracing::Span::current().record("patches", &*format!("{db_delete_patch_helpers:?}"));
-
-        if db_delete_patch_helpers.is_empty() {
-            return Ok(vec![]);
-        }
-
-        db.update(db_delete_patch_helpers.into_iter().map(Self::DeletePatchHelper::into))
-            .map(|result| match result {
-                Ok(records) => Ok(records),
-                Err(err) => {
-                    let err = err;
-                    error!(target: module_path!(), error = %err);
-                    Err(err)
-                }
-            })
-            .await
-            .map_err(DbEntityError::from)
-            .and_then(|records| {
-                records
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_, _>>()
-                    .map_err(DbEntityError::conversion)
-            })
-    }
-
-    #[framed]
-    #[instrument(skip_all)]
-    async fn delete_one<'query, 'v, D, F>(
-        db: &D,
-        patch: Self::DeletePatchHelper<'v>,
-    ) -> Result<Self, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
-    where
-        D: _Db + 'query,
-        'v: 'query,
-
-    // Id bounds
-        Self::Id: Clone + Hash + Eq + Send + Sync,
-        for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
-        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
-        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
-
-    // Changeset bounds
-        <Self::DeletePatch<'v> as AsChangeset>::Changeset: Send,
-        for<'a> &'a Self::DeletePatch<'v>:
-            HasTable<Table = Self::Table> + Identifiable<Id = &'a Self::Id> + IntoUpdateTarget,
-        for<'a> <&'a Self::DeletePatch<'v> as IntoUpdateTarget>::WhereClause: Send,
-        <Self::Table as QuerySource>::FromClause: Send,
-
-    // UpdateStatement bounds
-        Self::Table: FindDsl<Self::Id>,
-        ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
-        <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
-        ht::Update<ht::Find<Self::Table, Self::Id>, Self::DeletePatch<'v>>:
-            AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
-
-    // Filter bounds for records whose changesets do not include any changes
-        Self::Table:
-            FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
-        F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
-
-    // Audit bounds
-        Self::Raw: Audit + Clone,
-        <Self::Raw as Audit>::AuditRow: Send,
-        Vec<<Self::Raw as Audit>::AuditRow>: Insertable<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>
-            + UndecoratedInsertRecord<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>,
-        <<Self::Raw as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<Self::Raw as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-        <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-        >>::Values: Send,
-        InsertStatement<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-                <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            >>::Values,
-        >: ExecuteDsl<D::AsyncConnection>,
-    {
-        tracing::Span::current().record("patch", &*format!("{patch:?}"));
-
-        db.update([patch.into()])
-            .map(|result| match result {
-                Ok(mut records) => Ok(records.pop().ok_or(diesel::result::Error::NotFound)?),
-                Err(err) => {
-                    let err = err;
-                    error!(target: module_path!(), error = %err);
-                    Err(err)
-                }
-            })
-            .await
-            .map_err(DbEntityError::from)
-            .and_then(|record| record.try_into().map_err(DbEntityError::conversion))
-    }
 }
 
 #[async_trait]
 pub trait DbUpdate: DbEntity {
     /// conversion helper type if needed, defaults to [`Self::Patch`]
-    type PatchHelper<'a>: Debug + Into<Self::Patch<'a>> + Send = Self::Patch<'a>;
-    type Patch<'a>: AsChangeset<Target = Self::Table>
+    type PatchHelper<'v>: Debug + Into<Self::Patch<'v>> + Send = Self::Patch<'v>;
+    type Patch<'v>: AsChangeset<Target = Self::Table>
         + Debug
         + HasTable<Table = Self::Table>
         + IncludesChanges
@@ -650,47 +380,31 @@ pub trait DbUpdate: DbEntity {
         D: _Db + 'query,
         'v: 'query,
 
-    // Id bounds
+        // Id bounds
         Self::Id: Clone + Hash + Eq + Send + Sync,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
-    // Changeset bounds
+        // Changeset bounds
         <Self::Patch<'v> as AsChangeset>::Changeset: Send,
-        for<'a> &'a Self::Patch<'v>:
-            HasTable<Table = Self::Table> + Identifiable<Id = &'a Self::Id> + IntoUpdateTarget,
+        for<'a> &'a Self::Patch<'v>: HasTable<Table = Self::Table> + Identifiable<Id = &'a Self::Id> + IntoUpdateTarget,
         for<'a> <&'a Self::Patch<'v> as IntoUpdateTarget>::WhereClause: Send,
         <Self::Table as QuerySource>::FromClause: Send,
 
-    // UpdateStatement bounds
+        // UpdateStatement bounds
         Self::Table: FindDsl<Self::Id>,
         ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
         <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
         ht::Update<ht::Find<Self::Table, Self::Id>, Self::Patch<'v>>:
             AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
 
-    // Filter bounds for records whose changesets do not include any changes
-        Self::Table:
-            FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
+        // Filter bounds for records whose changesets do not include any changes
+        Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
         F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
 
-    // Audit bounds
-        Self::Raw: Audit + Clone,
-        <Self::Raw as Audit>::AuditRow: Send,
-        Vec<<Self::Raw as Audit>::AuditRow>: Insertable<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>
-            + UndecoratedInsertRecord<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>,
-        <<Self::Raw as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<Self::Raw as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-        <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-        >>::Values: Send,
-        InsertStatement<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-                <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            >>::Values,
-        >: ExecuteDsl<D::AsyncConnection>,
+        // Audit bounds
+        Self::Raw: MaybeAudit<'query, D::AsyncConnection>,
     {
         let db_patch_helpers = patches.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("patches", &*format!("{db_patch_helpers:?}"));
@@ -729,47 +443,31 @@ pub trait DbUpdate: DbEntity {
         D: _Db + 'query,
         'v: 'query,
 
-    // Id bounds
+        // Id bounds
         Self::Id: Clone + Hash + Eq + Send + Sync,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
-    // Changeset bounds
+        // Changeset bounds
         <Self::Patch<'v> as AsChangeset>::Changeset: Send,
-        for<'a> &'a Self::Patch<'v>:
-            HasTable<Table = Self::Table> + Identifiable<Id = &'a Self::Id> + IntoUpdateTarget,
+        for<'a> &'a Self::Patch<'v>: HasTable<Table = Self::Table> + Identifiable<Id = &'a Self::Id> + IntoUpdateTarget,
         for<'a> <&'a Self::Patch<'v> as IntoUpdateTarget>::WhereClause: Send,
         <Self::Table as QuerySource>::FromClause: Send,
 
-    // UpdateStatement bounds
+        // UpdateStatement bounds
         Self::Table: FindDsl<Self::Id>,
         ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
         <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
         ht::Update<ht::Find<Self::Table, Self::Id>, Self::Patch<'v>>:
             AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
 
-    // Filter bounds for records whose changesets do not include any changes
-        Self::Table:
-            FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
+        // Filter bounds for records whose changesets do not include any changes
+        Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
         F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
 
-    // Audit bounds
-        Self::Raw: Audit + Clone,
-        <Self::Raw as Audit>::AuditRow: Send,
-        Vec<<Self::Raw as Audit>::AuditRow>: Insertable<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>
-            + UndecoratedInsertRecord<<<Self::Raw as Audit>::AuditTable as HasTable>::Table>,
-        <<Self::Raw as Audit>::AuditTable as HasTable>::Table: Table + QueryId + Send,
-        <<<Self::Raw as Audit>::AuditTable as HasTable>::Table as QuerySource>::FromClause: Send,
-        <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-        >>::Values: Send,
-        InsertStatement<
-            <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            <Vec<<Self::Raw as Audit>::AuditRow> as Insertable<
-                <<Self::Raw as Audit>::AuditTable as HasTable>::Table,
-            >>::Values,
-        >: ExecuteDsl<D::AsyncConnection>,
+        // Audit bounds
+        Self::Raw: MaybeAudit<'query, D::AsyncConnection>,
     {
         tracing::Span::current().record("patch", &*format!("{patch:?}"));
 
@@ -786,114 +484,58 @@ pub trait DbUpdate: DbEntity {
             .map_err(DbEntityError::from)
             .and_then(|record| record.try_into().map_err(DbEntityError::conversion))
     }
+}
+
+#[async_trait]
+pub trait DbDelete: DbEntity {
+    type DeletedAt;
+    type DeletePatch<'v>;
 
     #[framed]
     #[instrument(skip_all)]
-    async fn update_without_audit<'query, 'v, D, F>(
+    async fn delete<'query, 'v, D, F, I>(
         db: &D,
-        patches: impl IntoIterator<Item = Self::PatchHelper<'v>> + Send + 'v,
+        ids: I,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db + 'query,
-        'v: 'query,
+
+        I: Send,
 
         // Id bounds
-        Self::Id: Clone + Hash + Eq + Send + Sync,
+        Self::Id: Debug + Send,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
-        // Changeset bounds
-        <Self::Patch<'v> as AsChangeset>::Changeset: Send,
-        for<'a> &'a Self::Patch<'v>: HasTable<Table = Self::Table> + Identifiable<Id = &'a Self::Id> + IntoUpdateTarget,
-        for<'a> <&'a Self::Patch<'v> as IntoUpdateTarget>::WhereClause: Send,
-        <Self::Table as QuerySource>::FromClause: Send,
-
-        // UpdateStatement bounds
-        Self::Table: FindDsl<Self::Id>,
-        ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
-        <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
-        ht::Update<ht::Find<Self::Table, Self::Id>, Self::Patch<'v>>:
-            AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
-
-        // Filter bounds for records whose changesets do not include any changes
-        Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
-        F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        Self::Raw: Deletable<'query, D::AsyncConnection, Self::Table, I, F, Self::DeletedAt, Self::DeletePatch<'v>>,
     {
-        let db_patch_helpers = patches.into_iter().collect::<Vec<_>>();
-        tracing::Span::current().record("patches", &*format!("{db_patch_helpers:?}"));
-
-        if db_patch_helpers.is_empty() {
-            return Ok(vec![]);
-        }
-
-        db.update_without_audit(db_patch_helpers.into_iter().map(Self::PatchHelper::into))
-            .map(|result| match result {
-                Ok(records) => Ok(records),
-                Err(err) => {
-                    let err = err;
-                    error!(target: module_path!(), error = %err);
-                    Err(err)
+        db.raw_tx(move |conn| {
+            async move {
+                match Self::Raw::maybe_soft_delete(conn, ids).await {
+                    Either::Left(ids) => Self::Raw::delete(conn, ids).await,
+                    Either::Right(result) => result,
                 }
-            })
-            .await
-            .map_err(DbEntityError::from)
-            .and_then(|records| {
-                records
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_, _>>()
-                    .map_err(DbEntityError::conversion)
-            })
-    }
-
-    #[framed]
-    #[instrument(skip_all)]
-    async fn update_one_without_audit<'query, 'v, D, F>(
-        db: &D,
-        patch: Self::PatchHelper<'v>,
-    ) -> Result<Self, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
-    where
-        D: _Db + 'query,
-        'v: 'query,
-
-        // Id bounds
-        Self::Id: Clone + Hash + Eq + Send + Sync,
-        for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
-        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
-        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
-
-        // Changeset bounds
-        <Self::Patch<'v> as AsChangeset>::Changeset: Send,
-        for<'a> &'a Self::Patch<'v>: HasTable<Table = Self::Table> + Identifiable<Id = &'a Self::Id> + IntoUpdateTarget,
-        for<'a> <&'a Self::Patch<'v> as IntoUpdateTarget>::WhereClause: Send,
-        <Self::Table as QuerySource>::FromClause: Send,
-
-        // UpdateStatement bounds
-        Self::Table: FindDsl<Self::Id>,
-        ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
-        <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
-        ht::Update<ht::Find<Self::Table, Self::Id>, Self::Patch<'v>>:
-            AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
-
-        // Filter bounds for records whose changesets do not include any changes
-        Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
-        F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
-    {
-        tracing::Span::current().record("patch", &*format!("{patch:?}"));
-
-        db.update_without_audit([patch.into()])
-            .map(|result| match result {
-                Ok(mut records) => Ok(records.pop().ok_or(diesel::result::Error::NotFound)?),
-                Err(err) => {
-                    let err = err;
-                    error!(target: module_path!(), error = %err);
-                    Err(err)
-                }
-            })
-            .await
-            .map_err(DbEntityError::from)
-            .and_then(|record| record.try_into().map_err(DbEntityError::conversion))
+            }
+            .scope_boxed()
+        })
+        .map(|result| match result {
+            Ok(records) => Ok(records),
+            Err(err) => {
+                let err = err;
+                error!(target: module_path!(), error = %err);
+                Err(err)
+            }
+        })
+        .await
+        .map_err(DbEntityError::from)
+        .and_then(|records| {
+            records
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()
+                .map_err(DbEntityError::conversion)
+        })
     }
 }
 
@@ -914,3 +556,8 @@ where
 }
 
 impl<T: DbEntity> DbGet for T {}
+
+impl<T: DbEntity> DbDelete for T {
+    default type DeletedAt = ();
+    default type DeletePatch<'v> = ();
+}

@@ -14,6 +14,15 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
         _ => return Err(Error::new_spanned(ast, "Db can only be derived on struct types")),
     };
 
+    let mut should_box_tx_fn = false;
+    if let Some(attr) = ast.attrs.iter().find(|attr| attr.path.is_ident("db")) {
+        let ident = attr.parse_args::<syn::Ident>()?;
+        match &*ident.to_string() {
+            "box_tx" => should_box_tx_fn = true,
+            _ => {}
+        };
+    }
+
     let mut db_field_and_index: Option<(usize, &syn::Field)> = None;
     for (index, db_field) in data_struct.fields.iter().enumerate() {
         for attr in &db_field.attrs {
@@ -39,7 +48,7 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
         }
     };
 
-    let db_field_ident = match db_field.ident.as_ref() {
+    let db_field_accessor = match db_field.ident.as_ref() {
         Some(ident) => quote!(#ident),
         None => TokenStream::from_str(&format!("{db_field_index}")).unwrap(),
     };
@@ -220,6 +229,15 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
     }
     tx_connection_type_constructor = quote!(#tx_connection_type_constructor>);
 
+    let sub_callback = format_ident!("sub_callback");
+    let optionally_box_tx_fn = if should_box_tx_fn {
+        quote!(
+            let #sub_callback: Box<dyn for<'r> diesel_util::TxFn<'a, D::TxConnection<'r>, diesel_util::scoped_futures::ScopedBoxFuture<'a, 'r, Result<T, E>>>> = Box::new(#sub_callback);
+        )
+    } else {
+        quote!()
+    };
+
     let tokens = quote! {
         #[diesel_util::diesel_util_async_trait]
         impl #db_impl_generics diesel_util::_Db for #ident #ty_generics #db_where_clause {
@@ -236,7 +254,7 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
                 E: std::fmt::Debug + From<diesel_util::diesel::result::Error> + Send + 'a,
                 T: Send + 'a
             {
-                self.#db_field_ident.query(f).await
+                self.#db_field_accessor.query(f).await
             }
 
             async fn with_tx_connection<'a, F, T, E>(&self, f: F) -> Result<T, E>
@@ -247,11 +265,11 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
                 E: std::fmt::Debug + From<diesel_util::diesel::result::Error> + Send + 'a,
                 T: Send + 'a
             {
-                self.#db_field_ident.with_tx_connection(f).await
+                self.#db_field_accessor.with_tx_connection(f).await
             }
 
             fn tx_id(&self) -> Option<diesel_util::uuid::Uuid> {
-                self.#db_field_ident.tx_id()
+                self.#db_field_accessor.tx_id()
             }
 
             async fn tx_cleanup<F, E>(&self, f: F)
@@ -259,7 +277,7 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
                 F: for<'r> diesel_util::TxCleanupFn<'r, Self::AsyncConnection, E>,
                 E: Into<diesel_util::TxCleanupError> + 'static
             {
-                self.#db_field_ident.tx_cleanup(f).await
+                self.#db_field_accessor.tx_cleanup(f).await
             }
 
             async fn tx<'life0, 'a, T, E, F>(&'life0 self, callback: F) -> Result<T, E>
@@ -269,10 +287,12 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
                 T: Send + 'a,
                 'life0: 'a
             {
-                self.#db_field_ident.tx(|#tx_connection_input| {
+                let #sub_callback = |#tx_connection_input| {
                     let tx_connection = #tx_connection_constructor;
                     callback(tx_connection)
-                }).await
+                };
+                #optionally_box_tx_fn
+                self.#db_field_accessor.tx(#sub_callback).await
             }
         }
     };

@@ -129,7 +129,7 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
                 use std::borrow::Borrow;
                 Self {
                     id: id.borrow().clone(),
-                    #deleted_at_column_name: Utc::now().naive_utc(),
+                    #deleted_at_column_name: diesel_util::chrono::Utc::now().naive_utc(),
                 }
             }
         }

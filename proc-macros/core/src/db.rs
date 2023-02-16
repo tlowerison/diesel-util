@@ -230,12 +230,27 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
     tx_connection_type_constructor = quote!(#tx_connection_type_constructor>);
 
     let sub_callback = format_ident!("sub_callback");
-    let optionally_box_tx_fn = if should_box_tx_fn {
-        quote!(
-            let #sub_callback: Box<dyn for<'r> diesel_util::TxFn<'a, D::TxConnection<'r>, diesel_util::scoped_futures::ScopedBoxFuture<'a, 'r, Result<T, E>>>> = Box::new(#sub_callback);
-        )
+    let sub_callback = if should_box_tx_fn {
+        quote!({
+            let #sub_callback: Box<
+                dyn for<'r> diesel_util::TxFn<
+                    'a,
+                    D::TxConnection<'r>,
+                    diesel_util::scoped_futures::ScopedBoxFuture<'a, 'r, Result<T, E>>,
+                >,
+            > = Box::new(move |#tx_connection_input| {
+                let tx_connection = #tx_connection_constructor;
+                callback(tx_connection)
+            });
+            #sub_callback
+        })
     } else {
-        quote!()
+        quote!(
+            move |#tx_connection_input| {
+                let tx_connection = #tx_connection_constructor;
+                callback(tx_connection)
+            }
+        )
     };
 
     let tokens = quote! {
@@ -287,11 +302,6 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
                 T: Send + 'a,
                 'life0: 'a
             {
-                let #sub_callback = |#tx_connection_input| {
-                    let tx_connection = #tx_connection_constructor;
-                    callback(tx_connection)
-                };
-                #optionally_box_tx_fn
                 self.#db_field_accessor.tx(#sub_callback).await
             }
         }

@@ -119,10 +119,7 @@ pub fn derive_audit(tokens: TokenStream) -> Result<TokenStream, Error> {
 
     let vis = ast.vis;
 
-    field_names.insert(
-        primary_key_index + 1,
-        format_ident!("{}_{}", table_name, primary_key_name),
-    );
+    field_names.insert(primary_key_index + 1, foreign_key.clone());
     field_types.insert(primary_key_index + 1, primary_key_type);
     field_attrs.insert(primary_key_index + 1, Vec::default());
     field_vises.insert(primary_key_index + 1, vis.clone());

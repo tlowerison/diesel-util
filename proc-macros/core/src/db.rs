@@ -1,8 +1,8 @@
 use proc_macro2::TokenStream;
+use proc_macro_util::add_bounds_to_generics;
 use std::str::FromStr;
 use syn::parse::Error;
 use syn::parse2;
-use syn::punctuated::Punctuated;
 
 pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
     let ast: syn::DeriveInput = parse2(item)?;
@@ -59,111 +59,30 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
     let with_tx_connection_lifetime = quote!('with_tx_connection);
 
     let mut db_trait_generics = ast.generics.clone();
-    for param in db_trait_generics.params.iter_mut() {
-        if let syn::GenericParam::Type(syn::TypeParam { bounds, ident, .. }) = param {
-            let mut has_clone_bound = false;
-            let mut has_send_bound = false;
-            let mut has_sync_bound = false;
-            let is_param_exact_db_field_type = if let syn::Type::Path(syn::TypePath { path, .. }) = db_field_type {
-                if let Some(db_field_type_ident) = path.get_ident() {
-                    ident == db_field_type_ident
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
 
-            for bound in &*bounds {
-                if let syn::TypeParamBound::Trait(syn::TraitBound { path, .. }) = bound {
-                    if path.is_ident("Clone") {
-                        has_clone_bound = true;
-                    }
-                    if path.is_ident("Send") {
-                        has_send_bound = true;
-                    }
-                    if path.is_ident("Sync") {
-                        has_sync_bound = true;
-                    }
-                }
-            }
+    add_bounds_to_generics(
+        &mut db_trait_generics,
+        [
+            parse_quote!(Clone),
+            parse_quote!(std::fmt::Debug),
+            parse_quote!(Send),
+            parse_quote!(Sync),
+        ],
+        None,
+    );
 
-            if !has_clone_bound {
-                bounds.push(syn::TypeParamBound::Trait(syn::TraitBound {
-                    paren_token: None,
-                    modifier: syn::TraitBoundModifier::None,
-                    lifetimes: None,
-                    path: syn::Path {
-                        leading_colon: None,
-                        segments: Punctuated::from_iter(
-                            [syn::PathSegment {
-                                ident: format_ident!("Clone"),
-                                arguments: syn::PathArguments::None,
-                            }]
-                            .into_iter(),
-                        ),
-                    },
-                }));
-            }
-            if !has_send_bound {
-                bounds.push(syn::TypeParamBound::Trait(syn::TraitBound {
-                    paren_token: None,
-                    modifier: syn::TraitBoundModifier::None,
-                    lifetimes: None,
-                    path: syn::Path {
-                        leading_colon: None,
-                        segments: Punctuated::from_iter(
-                            [syn::PathSegment {
-                                ident: format_ident!("Send"),
-                                arguments: syn::PathArguments::None,
-                            }]
-                            .into_iter(),
-                        ),
-                    },
-                }));
-            }
-            if !has_sync_bound {
-                bounds.push(syn::TypeParamBound::Trait(syn::TraitBound {
-                    paren_token: None,
-                    modifier: syn::TraitBoundModifier::None,
-                    lifetimes: None,
-                    path: syn::Path {
-                        leading_colon: None,
-                        segments: Punctuated::from_iter(
-                            [syn::PathSegment {
-                                ident: format_ident!("Sync"),
-                                arguments: syn::PathArguments::None,
-                            }]
-                            .into_iter(),
-                        ),
-                    },
-                }));
-            }
-            if is_param_exact_db_field_type {
-                bounds.push(syn::TypeParamBound::Trait(syn::TraitBound {
-                    paren_token: None,
-                    modifier: syn::TraitBoundModifier::None,
-                    lifetimes: None,
-                    path: syn::Path {
-                        leading_colon: None,
-                        segments: Punctuated::from_iter(
-                            [
-                                syn::PathSegment {
-                                    ident: format_ident!("diesel_util"),
-                                    arguments: syn::PathArguments::None,
-                                },
-                                syn::PathSegment {
-                                    ident: format_ident!("_Db"),
-                                    arguments: syn::PathArguments::None,
-                                },
-                            ]
-                            .into_iter(),
-                        ),
-                    },
-                }));
-            }
-        }
+    if db_trait_generics.where_clause.is_none() {
+        db_trait_generics.where_clause = Some(syn::WhereClause {
+            where_token: Default::default(),
+            predicates: Default::default(),
+        });
     }
+    db_trait_generics
+        .where_clause
+        .as_mut()
+        .unwrap()
+        .predicates
+        .push(parse_quote!(#db_field_type: diesel_util::_Db));
 
     let (db_impl_generics, _, db_where_clause) = db_trait_generics.split_for_impl();
 

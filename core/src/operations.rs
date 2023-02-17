@@ -542,7 +542,7 @@ pub trait DbDelete: DbEntity {
 /// DbEntity is automatically implemented for any type which implements Audit and HasTable
 impl<T, Tab, Id> DbEntity for T
 where
-    T: Audit + Clone + HasTable<Table = Tab> + Send + 'static,
+    T: Clone + HasTable<Table = Tab> + Send + 'static,
     Tab: Table + QueryId + Send,
 
     Id: AsExpression<SqlTypeOf<Tab::PrimaryKey>>,

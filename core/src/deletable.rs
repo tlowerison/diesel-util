@@ -19,7 +19,10 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 pub trait Deletable<'query, C, Tab, I, F, DeletedAt, DeletePatch>: Sized {
-    fn delete<'life0, 'async_trait>(conn: &'life0 mut C, ids: I) -> BoxFuture<'async_trait, Result<Vec<Self>, Error>>
+    fn hard_delete<'life0, 'async_trait>(
+        conn: &'life0 mut C,
+        ids: I,
+    ) -> BoxFuture<'async_trait, Result<Vec<Self>, Error>>
     where
         'life0: 'async_trait,
         'query: 'async_trait,
@@ -62,7 +65,7 @@ where
     // Audit bounds
     Self: MaybeAudit<'query, C>,
 {
-    default fn delete<'life0, 'async_trait>(
+    default fn hard_delete<'life0, 'async_trait>(
         conn: &'life0 mut C,
         ids: I,
     ) -> BoxFuture<'async_trait, Result<Vec<Self>, Error>>

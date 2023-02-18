@@ -513,7 +513,7 @@ pub trait DbDelete: DbEntity {
         db.raw_tx(move |conn| {
             async move {
                 match Self::Raw::maybe_soft_delete(conn, ids).await {
-                    Either::Left(ids) => Self::Raw::delete(conn, ids).await,
+                    Either::Left(ids) => Self::Raw::hard_delete(conn, ids).await,
                     Either::Right(result) => result,
                 }
             }

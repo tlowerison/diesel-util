@@ -1,4 +1,4 @@
-use crate::SoftDeletable;
+use crate::{SoftDeletable, SoftDeletableColumn};
 use diesel::dsl::{IsNotNull, IsNull};
 use diesel::{
     backend::Backend, expression::ValidGrouping, expression_methods::ExpressionMethods, helper_types::*,
@@ -74,7 +74,7 @@ where
         + QueryId
         + QueryFragment<<C as AsyncConnection>::Backend>
         + 'query
-        + FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>>,
+        + FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
     C: AsyncConnection,
     S: SoftDeletable,
     IsDeletedFilter<'query, Q, S>:
@@ -90,7 +90,7 @@ where
         + QueryId
         + QueryFragment<<C as AsyncConnection>::Backend>
         + 'query
-        + FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>>,
+        + FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
     C: AsyncConnection,
     S: SoftDeletable,
     IsNotDeletedFilter<'query, Q, S>:
@@ -100,35 +100,37 @@ where
 }
 
 pub struct IsDeletedFilter<'query, Q, S>(
-    Filter<Q, IsNotNull<<S as SoftDeletable>::DeletedAt>>,
+    Filter<Q, IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
     PhantomData<S>,
     PhantomData<&'query ()>,
 )
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>>,
-    Filter<Q, IsNotNull<<S as SoftDeletable>::DeletedAt>>: 'query,
+    Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
+    Filter<Q, IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>: 'query,
     Self: 'query;
 
 pub struct IsNotDeletedFilter<'query, Q, S>(
-    Filter<Q, IsNull<<S as SoftDeletable>::DeletedAt>>,
+    Filter<Q, IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
     PhantomData<S>,
     PhantomData<&'query ()>,
 )
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>>,
-    Filter<Q, IsNull<<S as SoftDeletable>::DeletedAt>>: 'query,
+    Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
+    Filter<Q, IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>: 'query,
     Self: 'query;
 
 impl<Q, S> From<Q> for IsDeletedFilter<'_, Q, S>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>>,
+    Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
 {
     fn from(q: Q) -> Self {
         Self(
-            q.filter(<<S as SoftDeletable>::DeletedAt as Default>::default().is_not_null()),
+            q.filter(
+                <<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column as Default>::default().is_not_null(),
+            ),
             PhantomData,
             PhantomData,
         )
@@ -138,11 +140,13 @@ where
 impl<Q, S> From<Q> for IsNotDeletedFilter<'_, Q, S>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>>,
+    Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
 {
     fn from(q: Q) -> Self {
         Self(
-            q.filter(<<S as SoftDeletable>::DeletedAt as Default>::default().is_null()),
+            q.filter(
+                <<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column as Default>::default().is_null(),
+            ),
             PhantomData,
             PhantomData,
         )
@@ -161,14 +165,14 @@ impl<T> From<T> for Wrapper<T> {
 impl<S, Q, F, QS> SelectableExpression<IsDeletedFilter<'_, Q, S>> for Wrapper<QS>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     QS: SelectableExpression<F>,
 {
 }
 impl<S, Q, F, QS> SelectableExpression<IsNotDeletedFilter<'_, Q, S>> for Wrapper<QS>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     QS: SelectableExpression<F>,
 {
 }
@@ -176,14 +180,14 @@ where
 impl<S, Q, F, QS> AppearsOnTable<IsDeletedFilter<'_, Q, S>> for Wrapper<QS>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     QS: AppearsOnTable<F>,
 {
 }
 impl<S, Q, F, QS> AppearsOnTable<IsNotDeletedFilter<'_, Q, S>> for Wrapper<QS>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     QS: AppearsOnTable<F>,
 {
 }
@@ -199,7 +203,7 @@ impl<GroupByClause, T: ValidGrouping<GroupByClause>> ValidGrouping<GroupByClause
 impl<S, Q, F> QuerySource for IsDeletedFilter<'_, Q, S>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     F: QuerySource,
 {
     type FromClause = F::FromClause;
@@ -215,7 +219,7 @@ where
 impl<S, Q, F> QuerySource for IsNotDeletedFilter<'_, Q, S>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     F: QuerySource,
 {
     type FromClause = F::FromClause;
@@ -232,7 +236,7 @@ where
 impl<S, Q, F> Query for IsDeletedFilter<'_, Q, S>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     F: Query,
 {
     type SqlType = <F as Query>::SqlType;
@@ -240,7 +244,7 @@ where
 impl<S, Q, F> Query for IsNotDeletedFilter<'_, Q, S>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     F: Query,
 {
     type SqlType = <F as Query>::SqlType;
@@ -249,7 +253,7 @@ where
 impl<S, Q, F, DB: Backend, ST> QueryFragment<DB, ST> for IsDeletedFilter<'_, Q, S>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     F: QueryFragment<DB, ST>,
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
@@ -259,7 +263,7 @@ where
 impl<S, Q, F, DB: Backend, ST> QueryFragment<DB, ST> for IsNotDeletedFilter<'_, Q, S>
 where
     S: SoftDeletable,
-    Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+    Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     F: QueryFragment<DB, ST>,
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
@@ -267,8 +271,11 @@ where
     }
 }
 
-impl<F: QueryId, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> QueryId
-    for IsDeletedFilter<'_, Q, S>
+impl<
+        F: QueryId,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > QueryId for IsDeletedFilter<'_, Q, S>
 {
     type QueryId = <F as QueryId>::QueryId;
     const HAS_STATIC_QUERY_ID: bool = <F as QueryId>::HAS_STATIC_QUERY_ID;
@@ -276,8 +283,11 @@ impl<F: QueryId, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::
         <F as QueryId>::query_id()
     }
 }
-impl<F: QueryId, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> QueryId
-    for IsNotDeletedFilter<'_, Q, S>
+impl<
+        F: QueryId,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > QueryId for IsNotDeletedFilter<'_, Q, S>
 {
     type QueryId = <F as QueryId>::QueryId;
     const HAS_STATIC_QUERY_ID: bool = <F as QueryId>::HAS_STATIC_QUERY_ID;
@@ -291,7 +301,7 @@ impl<
         DB,
         F: BoxedDsl<'query, DB>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > BoxedDsl<'query, DB> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as BoxedDsl<'query, DB>>::Output;
@@ -304,7 +314,7 @@ impl<
         DB,
         F: BoxedDsl<'query, DB>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > BoxedDsl<'query, DB> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as BoxedDsl<'query, DB>>::Output;
@@ -313,16 +323,22 @@ impl<
     }
 }
 
-impl<F: DistinctDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> DistinctDsl
-    for IsDeletedFilter<'_, Q, S>
+impl<
+        F: DistinctDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > DistinctDsl for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as DistinctDsl>::Output;
     fn distinct(self) -> Distinct<Self> {
         self.0.distinct()
     }
 }
-impl<F: DistinctDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> DistinctDsl
-    for IsNotDeletedFilter<'_, Q, S>
+impl<
+        F: DistinctDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > DistinctDsl for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as DistinctDsl>::Output;
     fn distinct(self) -> Distinct<Self> {
@@ -335,7 +351,7 @@ impl<
         Selection,
         F: DistinctOnDsl<Selection>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > DistinctOnDsl<Selection> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as DistinctOnDsl<Selection>>::Output;
@@ -348,7 +364,7 @@ impl<
         Selection,
         F: DistinctOnDsl<Selection>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > DistinctOnDsl<Selection> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as DistinctOnDsl<Selection>>::Output;
@@ -361,7 +377,7 @@ impl<
         Predicate,
         F: FilterDsl<Predicate>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > FilterDsl<Predicate> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as FilterDsl<Predicate>>::Output;
@@ -373,7 +389,7 @@ impl<
         Predicate,
         F: FilterDsl<Predicate>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > FilterDsl<Predicate> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as FilterDsl<Predicate>>::Output;
@@ -382,16 +398,24 @@ impl<
     }
 }
 
-impl<PK, F: FindDsl<PK>, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>>
-    FindDsl<PK> for IsDeletedFilter<'_, Q, S>
+impl<
+        PK,
+        F: FindDsl<PK>,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > FindDsl<PK> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as FindDsl<PK>>::Output;
     fn find(self, id: PK) -> Self::Output {
         self.0.find(id)
     }
 }
-impl<PK, F: FindDsl<PK>, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>>
-    FindDsl<PK> for IsNotDeletedFilter<'_, Q, S>
+impl<
+        PK,
+        F: FindDsl<PK>,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > FindDsl<PK> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as FindDsl<PK>>::Output;
     fn find(self, id: PK) -> Self::Output {
@@ -403,7 +427,7 @@ impl<
         Expr: Expression,
         F: GroupByDsl<Expr>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > GroupByDsl<Expr> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as GroupByDsl<Expr>>::Output;
@@ -415,7 +439,7 @@ impl<
         Expr: Expression,
         F: GroupByDsl<Expr>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > GroupByDsl<Expr> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as GroupByDsl<Expr>>::Output;
@@ -428,7 +452,7 @@ impl<
         Predicate,
         F: HavingDsl<Predicate>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > HavingDsl<Predicate> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as HavingDsl<Predicate>>::Output;
@@ -440,7 +464,7 @@ impl<
         Predicate,
         F: HavingDsl<Predicate>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > HavingDsl<Predicate> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as HavingDsl<Predicate>>::Output;
@@ -449,16 +473,22 @@ impl<
     }
 }
 
-impl<F: LimitDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> LimitDsl
-    for IsDeletedFilter<'_, Q, S>
+impl<
+        F: LimitDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > LimitDsl for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as LimitDsl>::Output;
     fn limit(self, limit: i64) -> Self::Output {
         self.0.limit(limit)
     }
 }
-impl<F: LimitDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> LimitDsl
-    for IsNotDeletedFilter<'_, Q, S>
+impl<
+        F: LimitDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > LimitDsl for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as LimitDsl>::Output;
     fn limit(self, limit: i64) -> Self::Output {
@@ -470,7 +500,7 @@ impl<
         Conn,
         F: diesel::RunQueryDsl<Conn>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > diesel::RunQueryDsl<Conn> for IsDeletedFilter<'_, Q, S>
 {
 }
@@ -478,7 +508,7 @@ impl<
         Conn,
         F: diesel::RunQueryDsl<Conn>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > diesel::RunQueryDsl<Conn> for IsNotDeletedFilter<'_, Q, S>
 {
 }
@@ -486,7 +516,7 @@ impl<
         Conn,
         F: diesel_async::RunQueryDsl<Conn>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > diesel_async::RunQueryDsl<Conn> for IsDeletedFilter<'_, Q, S>
 {
 }
@@ -494,7 +524,7 @@ impl<
         Conn,
         F: diesel_async::RunQueryDsl<Conn>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > diesel_async::RunQueryDsl<Conn> for IsNotDeletedFilter<'_, Q, S>
 {
 }
@@ -503,7 +533,7 @@ impl<
         Lock,
         F: LockingDsl<Lock>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > LockingDsl<Lock> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as LockingDsl<Lock>>::Output;
@@ -515,7 +545,7 @@ impl<
         Lock,
         F: LockingDsl<Lock>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > LockingDsl<Lock> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as LockingDsl<Lock>>::Output;
@@ -528,7 +558,7 @@ impl<
         Modifier,
         F: ModifyLockDsl<Modifier>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > ModifyLockDsl<Modifier> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as ModifyLockDsl<Modifier>>::Output;
@@ -540,7 +570,7 @@ impl<
         Modifier,
         F: ModifyLockDsl<Modifier>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > ModifyLockDsl<Modifier> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as ModifyLockDsl<Modifier>>::Output;
@@ -549,16 +579,22 @@ impl<
     }
 }
 
-impl<F: OffsetDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> OffsetDsl
-    for IsDeletedFilter<'_, Q, S>
+impl<
+        F: OffsetDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > OffsetDsl for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as OffsetDsl>::Output;
     fn offset(self, offset: i64) -> Self::Output {
         self.0.offset(offset)
     }
 }
-impl<F: OffsetDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> OffsetDsl
-    for IsNotDeletedFilter<'_, Q, S>
+impl<
+        F: OffsetDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > OffsetDsl for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as OffsetDsl>::Output;
     fn offset(self, offset: i64) -> Self::Output {
@@ -570,7 +606,7 @@ impl<
         Predicate,
         F: OrFilterDsl<Predicate>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > OrFilterDsl<Predicate> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as OrFilterDsl<Predicate>>::Output;
@@ -582,7 +618,7 @@ impl<
         Predicate,
         F: OrFilterDsl<Predicate>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > OrFilterDsl<Predicate> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as OrFilterDsl<Predicate>>::Output;
@@ -595,7 +631,7 @@ impl<
         Expr: Expression,
         F: OrderDsl<Expr>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > OrderDsl<Expr> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as OrderDsl<Expr>>::Output;
@@ -607,7 +643,7 @@ impl<
         Expr: Expression,
         F: OrderDsl<Expr>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > OrderDsl<Expr> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as OrderDsl<Expr>>::Output;
@@ -620,7 +656,7 @@ impl<
         Selection: Expression,
         F: SelectDsl<Selection>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > SelectDsl<Selection> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as SelectDsl<Selection>>::Output;
@@ -632,7 +668,7 @@ impl<
         Selection: Expression,
         F: SelectDsl<Selection>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > SelectDsl<Selection> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as SelectDsl<Selection>>::Output;
@@ -641,16 +677,22 @@ impl<
     }
 }
 
-impl<F: SelectNullableDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>>
-    SelectNullableDsl for IsDeletedFilter<'_, Q, S>
+impl<
+        F: SelectNullableDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > SelectNullableDsl for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as SelectNullableDsl>::Output;
     fn nullable(self) -> Self::Output {
         self.0.nullable()
     }
 }
-impl<F: SelectNullableDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>>
-    SelectNullableDsl for IsNotDeletedFilter<'_, Q, S>
+impl<
+        F: SelectNullableDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > SelectNullableDsl for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as SelectNullableDsl>::Output;
     fn nullable(self) -> Self::Output {
@@ -662,7 +704,7 @@ impl<
         Expr,
         F: ThenOrderDsl<Expr>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > ThenOrderDsl<Expr> for IsDeletedFilter<'_, Q, S>
 {
     type Output = <F as ThenOrderDsl<Expr>>::Output;
@@ -674,7 +716,7 @@ impl<
         Expr,
         F: ThenOrderDsl<Expr>,
         S: SoftDeletable,
-        Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
     > ThenOrderDsl<Expr> for IsNotDeletedFilter<'_, Q, S>
 {
     type Output = <F as ThenOrderDsl<Expr>>::Output;
@@ -683,11 +725,17 @@ impl<
     }
 }
 
-impl<F: QueryDsl, S: SoftDeletable, Q: FilterDsl<IsNotNull<<S as SoftDeletable>::DeletedAt>, Output = F>> QueryDsl
-    for IsDeletedFilter<'_, Q, S>
+impl<
+        F: QueryDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > QueryDsl for IsDeletedFilter<'_, Q, S>
 {
 }
-impl<F: QueryDsl, S: SoftDeletable, Q: FilterDsl<IsNull<<S as SoftDeletable>::DeletedAt>, Output = F>> QueryDsl
-    for IsNotDeletedFilter<'_, Q, S>
+impl<
+        F: QueryDsl,
+        S: SoftDeletable,
+        Q: FilterDsl<IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>, Output = F>,
+    > QueryDsl for IsNotDeletedFilter<'_, Q, S>
 {
 }

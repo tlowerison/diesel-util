@@ -38,8 +38,30 @@ pub trait Deletable<'query, C, Tab, I, F, DeletedAt, DeletePatch>: Sized {
         Self: 'async_trait;
 }
 
+pub trait SoftDeletableColumn {
+    type Column: Column<SqlType = Self::SqlType> + Default + ExpressionMethods;
+    type SqlType: SqlType;
+}
+
 pub trait SoftDeletable {
-    type DeletedAt: Default + Column<SqlType = Nullable<Timestamp>> + ExpressionMethods;
+    type DeletedAt: SoftDeletableColumn;
+}
+
+impl<T> SoftDeletableColumn for (T, Nullable<Timestamp>)
+where
+    T: Column<SqlType = Nullable<Timestamp>> + Default + ExpressionMethods,
+{
+    type Column = T;
+    type SqlType = Nullable<Timestamp>;
+}
+
+#[cfg(feature = "postgres")]
+impl<T> SoftDeletableColumn for (T, Nullable<diesel::pg::sql_types::Timestamptz>)
+where
+    T: Column<SqlType = Nullable<diesel::pg::sql_types::Timestamptz>> + Default + ExpressionMethods,
+{
+    type Column = T;
+    type SqlType = Nullable<diesel::pg::sql_types::Timestamptz>;
 }
 
 impl<'query, C, Tab, I, F, DeletedAt, DeletePatch, T> Deletable<'query, C, Tab, I, F, DeletedAt, DeletePatch> for T

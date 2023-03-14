@@ -556,8 +556,3 @@ where
 }
 
 impl<T: DbEntity> DbGet for T {}
-
-impl<T: DbEntity> DbDelete for T {
-    default type DeletedAt = ();
-    default type DeletePatch<'v> = ();
-}

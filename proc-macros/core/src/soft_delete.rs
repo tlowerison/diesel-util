@@ -100,11 +100,11 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
         let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
         quote!(
             impl diesel_util::SoftDeletable for #db_entity_path {
-                type DeletedAt = #table_name::#deleted_at_column_name;
+                type DeletedAt = (#table_name::#deleted_at_column_name, diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
             }
 
             impl #impl_generics diesel_util::DbDelete for #ident #ty_generics #where_clause {
-                type DeletedAt = #table_name::#deleted_at_column_name;
+                type DeletedAt = (#table_name::#deleted_at_column_name, diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
                 type DeletePatch<'a> = #soft_delete_ident;
             }
         )
@@ -114,7 +114,7 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
 
     let tokens = quote! {
         impl diesel_util::SoftDeletable for #ident {
-            type DeletedAt = #table_name::#deleted_at_column_name;
+            type DeletedAt = (#table_name::#deleted_at_column_name, diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
         }
 
         #[derive(AsChangeset, Clone, Debug, Identifiable, IncludesChanges)]
@@ -135,7 +135,7 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
         }
 
         impl diesel_util::DbDelete for #db_entity_path {
-            type DeletedAt = #table_name::#deleted_at_column_name;
+            type DeletedAt = (#table_name::#deleted_at_column_name, diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
             type DeletePatch<'a> = #soft_delete_ident;
         }
 

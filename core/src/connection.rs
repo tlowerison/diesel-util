@@ -3,14 +3,16 @@ use async_backtrace::{backtrace, Location};
 use diesel::associations::HasTable;
 use diesel::backend::Backend;
 use diesel::dsl::SqlTypeOf;
-use diesel::expression::{AsExpression, Expression};
+use diesel::expression::{AsExpression, Expression, ValidGrouping};
 use diesel::expression_methods::ExpressionMethods;
 use diesel::helper_types as ht;
 use diesel::query_builder::*;
 use diesel::query_dsl::methods::{FilterDsl, FindDsl};
+use diesel::query_dsl::select_dsl::SelectDsl;
 use diesel::query_source::QuerySource;
 use diesel::result::Error;
 use diesel::sql_types::SqlType;
+use diesel::SelectableExpression;
 use diesel::{Identifiable, Insertable, Table};
 use diesel_async::{methods::*, AsyncConnection, RunQueryDsl};
 use futures::future::{ready, BoxFuture, FutureExt, TryFutureExt};
@@ -263,20 +265,28 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn get<'life0, 'async_trait, 'query, R, T, Pk, F, I>(
+    fn get<'life0, 'async_trait, 'query, R, T, Pk, F, I, S>(
         &'life0 self,
         ids: I,
+        selection: S,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         Pk: AsExpression<SqlTypeOf<T::PrimaryKey>>,
         I: Debug + IntoIterator<Item = Pk> + Send,
         <I as IntoIterator>::IntoIter: Send + ExactSizeIterator,
+
         R: Send + HasTable<Table = T>,
-        T: Table,
+        T: Table + SelectDsl<S>,
+        ht::Select<T, S>: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, I>, Output = F>,
+
         T::PrimaryKey: Expression + ExpressionMethods,
         <T::PrimaryKey as Expression>::SqlType: SqlType,
-        T: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, I>, Output = F>,
+
         F: IsNotDeleted<'query, Self::AsyncConnection, R, R>,
+        <F as IsNotDeleted<'query, Self::AsyncConnection, R, R>>::IsNotDeletedFilter:
+            LoadQuery<'query, Self::AsyncConnection, R> + Send,
+
+        S: SelectableExpression<T> + Send + ValidGrouping<()> + 'query,
 
         'life0: 'async_trait,
         'query: 'async_trait,
@@ -285,6 +295,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         Pk: 'async_trait,
         F: 'async_trait,
         I: 'async_trait,
+        S: 'async_trait,
         Self: 'life0,
     {
         let ids = ids.into_iter();
@@ -293,27 +304,36 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         }
         execute_query!(
             self,
-            R::table().filter(R::table().primary_key().eq_any(ids)).is_not_deleted(),
+            R::table()
+                .select(selection)
+                .filter(R::table().primary_key().eq_any(ids))
+                .is_not_deleted(),
         )
         .boxed()
     }
 
     #[framed]
     #[instrument(skip_all)]
-    fn get_by_column<'life0, 'async_trait, 'query, R, U, Q, C>(
+    fn get_by_column<'life0, 'async_trait, 'query, R, U, Q, C, S>(
         &'life0 self,
         c: C,
         values: impl IntoIterator<Item = U> + Debug + Send,
+        selection: S,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         U: AsExpression<SqlTypeOf<C>>,
         C: Debug + Expression + ExpressionMethods + Send,
         SqlTypeOf<C>: SqlType,
+
         R: Send + HasTable,
-        <R as HasTable>::Table: Table + IsNotDeleted<'query, Self::AsyncConnection, R, R>,
-        <<R as HasTable>::Table as IsNotDeleted<'query, Self::AsyncConnection, R, R>>::IsNotDeletedFilter:
-            FilterDsl<ht::EqAny<C, Vec<U>>, Output = Q>,
-        Q: Send + LoadQuery<'query, Self::AsyncConnection, R> + 'query,
+        <R as HasTable>::Table: Table + SelectDsl<S>,
+        ht::Select<<R as HasTable>::Table, S>: FilterDsl<ht::EqAny<C, Vec<U>>, Output = Q>,
+
+        Q: IsNotDeleted<'query, Self::AsyncConnection, R, R>,
+        <Q as IsNotDeleted<'query, Self::AsyncConnection, R, R>>::IsNotDeletedFilter:
+            LoadQuery<'query, Self::AsyncConnection, R> + Send,
+
+        S: SelectableExpression<<R as HasTable>::Table> + Send + ValidGrouping<()> + 'query,
 
         'life0: 'async_trait,
         'query: 'async_trait,
@@ -321,59 +341,78 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         U: 'async_trait,
         Q: 'async_trait,
         C: 'async_trait,
+        S: 'async_trait,
         Self: 'life0,
     {
         execute_query!(
             self,
             R::table()
-                .is_not_deleted()
-                .filter(c.eq_any(values.into_iter().collect::<Vec<_>>())),
+                .select(selection)
+                .filter(c.eq_any(values.into_iter().collect::<Vec<_>>()))
+                .is_not_deleted(),
         )
         .boxed()
     }
 
     #[framed]
     #[instrument(skip_all)]
-    fn get_page<'life0, 'async_trait, 'query, R, P, F>(
+    fn get_page<'life0, 'async_trait, 'query, R, P, F, S>(
         &'life0 self,
         page: P,
+        selection: S,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         P: Borrow<Page> + Debug + Send,
+
         R: Send + HasTable,
-        <R as HasTable>::Table: Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        <R as HasTable>::Table: Table + SelectDsl<S>,
+
+        ht::Select<<R as HasTable>::Table, S>:
+            IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+
         F: Paginate + Send,
         <F as AsQuery>::Query: 'query,
         Paginated<<F as AsQuery>::Query>: LoadQuery<'query, Self::AsyncConnection, R> + Send,
+
+        S: SelectableExpression<<R as HasTable>::Table> + Send + ValidGrouping<()> + 'query,
 
         'life0: 'async_trait,
         'query: 'async_trait,
         R: 'async_trait,
         P: 'async_trait,
         F: 'async_trait,
+        S: 'async_trait,
         Self: 'life0,
     {
         if page.borrow().is_empty() {
             return Box::pin(ready(Ok(vec![])));
         }
-        execute_query!(self, R::table().is_not_deleted().paginate(page)).boxed()
+        execute_query!(self, R::table().select(selection).is_not_deleted().paginate(page)).boxed()
     }
 
     #[framed]
     #[instrument(skip_all)]
-    fn get_pages<'life0, 'async_trait, 'query, R, P, I, F>(
+    fn get_pages<'life0, 'async_trait, 'query, R, P, I, F, S>(
         &'life0 self,
         pages: I,
+        selection: S,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         P: Debug + for<'a> PageRef<'a> + Send,
         I: Debug + IntoIterator<Item = P> + Send,
         <I as IntoIterator>::IntoIter: Send,
+
         R: Send + HasTable,
-        <R as HasTable>::Table: Table + IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        <R as HasTable>::Table: Table + SelectDsl<S>,
+
+        ht::Select<<R as HasTable>::Table, S>:
+            IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+
         F: Paginate + Send,
         <F as AsQuery>::Query: 'query,
         Paginated<<F as AsQuery>::Query>: LoadQuery<'query, Self::AsyncConnection, R> + Send,
+
+        S: SelectableExpression<<R as HasTable>::Table> + Send + ValidGrouping<()> + 'query,
 
         'life0: 'async_trait,
         'query: 'async_trait,
@@ -381,16 +420,25 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         P: 'async_trait,
         I: 'async_trait,
         F: 'async_trait,
+        S: 'async_trait,
         Self: 'life0,
     {
-        execute_query!(self, R::table().is_not_deleted().multipaginate(pages.into_iter()),).boxed()
+        execute_query!(
+            self,
+            R::table()
+                .select(selection)
+                .is_not_deleted()
+                .multipaginate(pages.into_iter()),
+        )
+        .boxed()
     }
 
     #[framed]
     #[instrument(skip_all)]
-    fn insert<'life0, 'async_trait, 'query, 'v, R, V, I>(
+    fn insert<'life0, 'async_trait, 'query, 'v, R, V, I, Op, S>(
         &'life0 self,
         values: I,
+        selection: S,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         V: HasTable + Send,
@@ -401,11 +449,24 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         <Vec<V> as Insertable<<V as HasTable>::Table>>::Values: Send + 'query,
         R: Send,
         InsertStatement<<V as HasTable>::Table, <Vec<V> as Insertable<<V as HasTable>::Table>>::Values>:
-            LoadQuery<'query, Self::AsyncConnection, R>,
+            Into<InsertStatement<<V as HasTable>::Table, <Vec<V> as Insertable<<V as HasTable>::Table>>::Values, Op>>,
+        InsertStatement<
+            <V as HasTable>::Table,
+            <Vec<V> as Insertable<<V as HasTable>::Table>>::Values,
+            Op,
+            ReturningClause<S>,
+        >: LoadQuery<'query, Self::AsyncConnection, R>,
 
         I: IntoIterator<Item = V> + Send,
 
         R: MaybeAudit<'query, Self::AsyncConnection>,
+
+        Op: Send + 'query,
+        S: SelectableExpression<<V as HasTable>::Table> + Send + ValidGrouping<()> + 'query,
+        <S as ValidGrouping<()>>::IsAggregate: diesel::expression::MixedAggregates<
+            diesel::expression::is_aggregate::No,
+            Output = diesel::expression::is_aggregate::No,
+        >,
 
         'v: 'async_trait + 'life0,
         'life0: 'async_trait,
@@ -413,6 +474,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         R: 'async_trait,
         V: 'async_trait,
         I: 'async_trait + 'v,
+        S: 'async_trait,
     {
         instrument_err!(self.raw_tx(move |conn| {
             let values = values.into_iter().collect::<Vec<_>>();
@@ -423,6 +485,8 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             async move {
                 let all_inserted = diesel::insert_into(V::table())
                     .values(values)
+                    .into()
+                    .returning(selection)
                     .get_results::<R>(conn)
                     .await?;
 
@@ -437,52 +501,10 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[framed]
     #[instrument(skip_all)]
-    fn insert_one<'life0, 'async_trait, 'query, 'v, R, V>(
-        &'life0 self,
-        value: V,
-    ) -> BoxFuture<'async_trait, Result<R, Error>>
-    where
-        V: HasTable + Send,
-        <V as HasTable>::Table: Table + QueryId + Send + 'query,
-        <<V as HasTable>::Table as QuerySource>::FromClause: Send,
-
-        [V; 1]: Insertable<<V as HasTable>::Table>,
-        <[V; 1] as Insertable<<V as HasTable>::Table>>::Values: Send + 'query,
-        R: Send,
-        InsertStatement<<V as HasTable>::Table, <[V; 1] as Insertable<<V as HasTable>::Table>>::Values>:
-            LoadQuery<'query, Self::AsyncConnection, R>,
-
-        R: MaybeAudit<'query, Self::AsyncConnection>,
-
-        'v: 'async_trait + 'life0,
-        'life0: 'async_trait,
-        Self: 'life0,
-        R: 'async_trait,
-        V: 'async_trait,
-    {
-        instrument_err!(self.raw_tx(move |conn| {
-            async move {
-                let inserted = diesel::insert_into(V::table())
-                    .values([value])
-                    .get_result::<R>(conn)
-                    .await?;
-
-                let inserted = [inserted];
-                R::maybe_insert_audit_records(conn, &inserted).await?;
-                let [inserted] = inserted;
-
-                Ok(inserted)
-            }
-            .scope_boxed()
-        }))
-        .boxed()
-    }
-
-    #[framed]
-    #[instrument(skip_all)]
-    fn update<'life0, 'async_trait, 'query, 'v, R, V, I, T, Pk, F>(
+    fn update<'life0, 'async_trait, 'query, 'v, R, V, I, T, Pk, F, S>(
         &'life0 self,
         patches: I,
+        selection: S,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
         V: AsChangeset<Target = T> + HasTable<Table = T> + IncludesChanges + Send + Sync,
@@ -492,13 +514,25 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         ht::Find<T, Pk>: IntoUpdateTarget,
         <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause: Send + 'query,
-        ht::Update<ht::Find<T, Pk>, V>: AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
+        UpdateStatement<
+            <ht::Find<T, Pk> as HasTable>::Table,
+            <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause,
+            <V as AsChangeset>::Changeset,
+        >: AsQuery,
+        UpdateStatement<
+            <ht::Find<T, Pk> as HasTable>::Table,
+            <ht::Find<T, Pk> as IntoUpdateTarget>::WhereClause,
+            <V as AsChangeset>::Changeset,
+            ReturningClause<S>,
+        >: AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
 
-        Pk: AsExpression<SqlTypeOf<T::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
+        Pk: AsExpression<SqlTypeOf<<T as Table>::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
 
-        T: FindDsl<Pk> + Table + Send + 'query,
+        T: FindDsl<Pk> + SelectDsl<S> + Send + Sync + Table + 'query,
         ht::Find<T, Pk>: HasTable<Table = T> + Send,
         <T as QuerySource>::FromClause: Send,
+
+        <<T as Table>::PrimaryKey as Expression>::SqlType: Send,
 
         I: IntoIterator<Item = V> + Send,
         R: Send,
@@ -506,10 +540,17 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         R: MaybeAudit<'query, Self::AsyncConnection>,
 
-        T::PrimaryKey: Expression + ExpressionMethods,
-        <T::PrimaryKey as Expression>::SqlType: SqlType,
-        T: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, Vec<Pk>>, Output = F>,
+        <T as Table>::PrimaryKey: Expression + ExpressionMethods + Send + Sync,
+        <<T as Table>::PrimaryKey as Expression>::SqlType: SqlType,
+        ht::Select<T, S>: FilterDsl<ht::EqAny<<T as Table>::PrimaryKey, Vec<Pk>>, Output = F> + Send,
         F: IsNotDeleted<'query, Self::AsyncConnection, R, R>,
+
+        // Selection bounds
+        S: Clone + SelectableExpression<T> + Send + ValidGrouping<()> + Sync + 'query,
+        <S as ValidGrouping<()>>::IsAggregate: diesel::expression::MixedAggregates<
+            diesel::expression::is_aggregate::No,
+            Output = diesel::expression::is_aggregate::No,
+        >,
 
         'life0: 'async_trait,
         'query: 'async_trait,
@@ -520,25 +561,25 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         T: 'async_trait,
         Pk: 'async_trait,
         F: 'async_trait,
+        S: 'async_trait,
     {
         let patches = patches.into_iter().collect::<Vec<V>>();
         let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
+        let no_change_patch_ids = patches
+            .iter()
+            .filter_map(
+                |patch| {
+                    if !patch.includes_changes() {
+                        Some(patch.id().to_owned())
+                    } else {
+                        None
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
 
         instrument_err!(self.raw_tx(move |conn| {
             async move {
-                let no_change_patch_ids = patches
-                    .iter()
-                    .filter_map(
-                        |patch| {
-                            if !patch.includes_changes() {
-                                Some(patch.id().to_owned())
-                            } else {
-                                None
-                            }
-                        },
-                    )
-                    .collect::<Vec<_>>();
-
                 let num_changed_patches = ids.len() - no_change_patch_ids.len();
                 if num_changed_patches == 0 {
                     return Ok(vec![]);
@@ -547,6 +588,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                 for patch in patches.into_iter().filter(|patch| patch.includes_changes()) {
                     let record = diesel::update(V::table().find(patch.id().to_owned()))
                         .set(patch)
+                        .returning(selection.clone())
                         .get_result::<R>(conn)
                         .await?;
                     all_updated.push(record);
@@ -554,9 +596,12 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
                 R::maybe_insert_audit_records(conn, &all_updated).await?;
 
-                let filter = FilterDsl::filter(V::table(), V::table().primary_key().eq_any(no_change_patch_ids))
-                    .is_not_deleted();
-                let unchanged_records = filter.get_results::<R>(&mut *conn).await?;
+                let unchanged_records = V::table()
+                    .select(selection)
+                    .filter(V::table().primary_key().eq_any(no_change_patch_ids))
+                    .is_not_deleted()
+                    .get_results::<R>(&mut *conn)
+                    .await?;
 
                 let mut all_records = unchanged_records
                     .into_iter()

@@ -1,13 +1,14 @@
 use crate::*;
 use diesel::associations::HasTable;
 use diesel::dsl::SqlTypeOf;
-use diesel::expression::{AsExpression, Expression};
+use diesel::expression::{AsExpression, Expression, ValidGrouping};
 use diesel::expression_methods::ExpressionMethods;
 use diesel::helper_types as ht;
-use diesel::query_dsl::methods::{FilterDsl, FindDsl};
+use diesel::query_dsl::methods::{FilterDsl, FindDsl, SelectDsl};
 use diesel::query_source::QuerySource;
 use diesel::result::Error;
 use diesel::sql_types::SqlType;
+use diesel::SelectableExpression;
 use diesel::{query_builder::*, Identifiable};
 use diesel::{Insertable, Table};
 use diesel_async::methods::*;
@@ -63,7 +64,7 @@ pub trait DbEntity: Sized + Send + 'static {
     type Raw: HasTable<Table = Self::Table> + TryInto<Self> + Send + 'static;
 
     /// the table this entity represents
-    type Table: Table + QueryId + Send;
+    type Table: Table + QueryId + SelectDsl<Self::Selection> + Send + Sync;
 
     /// the type of this entity's table's primary key
     /// note that this type should be equivalent diesel sql_type representation of
@@ -71,6 +72,16 @@ pub trait DbEntity: Sized + Send + 'static {
     type Id: AsExpression<SqlTypeOf<<Self::Table as Table>::PrimaryKey>>
     where
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType;
+
+    /// represents the selection of columns returned from all queries
+    type Selection: Clone + SelectableExpression<Self::Table> + Send + ValidGrouping<()> + Sync;
+    /// a form of [`Self::Selection`] which is guaranteed to implement Default
+    /// exists because Default is only implemented for tuple types of 12 items or less
+    type SelectionHelper: Default + SelectionInto<Self::Selection> + Send;
+
+    fn selection() -> Self::Selection {
+        Self::SelectionHelper::default().selection_into()
+    }
 }
 
 #[async_trait]
@@ -90,8 +101,15 @@ pub trait DbGet: DbEntity {
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
-        Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
+        ht::Select<Self::Table, Self::Selection>:
+            FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
+
+        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
+        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
+
         F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        <F as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
+            LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
     {
         let ids = ids.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("ids", &*format!("{ids:?}"));
@@ -100,7 +118,7 @@ pub trait DbGet: DbEntity {
             return Ok(vec![]);
         }
 
-        let result: Result<Vec<Self::Raw>, _> = db.get(ids).await;
+        let result: Result<Vec<Self::Raw>, _> = db.get(ids, Self::selection()).await;
         match result {
             Ok(records) => Ok(records
                 .into_iter()
@@ -129,10 +147,25 @@ pub trait DbGet: DbEntity {
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
-        Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, [Self::Id; 1]>, Output = F>,
+        // Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, [Self::Id; 1]>, Output = F>,
+        // F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        // <F as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
+        //     SelectDsl<Self::Selection>,
+        // ht::Select<
+        //     <F as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter,
+        //     Self::Selection,
+        // >: LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
+        ht::Select<Self::Table, Self::Selection>:
+            FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, [Self::Id; 1]>, Output = F>,
+
+        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
+        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
+
         F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        <F as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
+            LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
     {
-        let result: Result<Vec<Self::Raw>, _> = db.get([id]).await;
+        let result: Result<Vec<Self::Raw>, _> = db.get([id], Self::selection()).await;
         match result {
             Ok(records) => Ok(records
                 .into_iter()
@@ -163,15 +196,16 @@ pub trait DbGet: DbEntity {
         C: Debug + Expression + ExpressionMethods + Send,
         SqlTypeOf<C>: SqlType,
 
-        Self::Table: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
-        <Self::Table as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
-            FilterDsl<ht::EqAny<C, Vec<U>>, Output = Q>,
-        Q: Send + LoadQuery<'query, D::AsyncConnection, Self::Raw> + 'query,
+        ht::Select<Self::Table, Self::Selection>: FilterDsl<ht::EqAny<C, Vec<U>>, Output = Q>,
+
+        Q: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
+        <Q as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
+            LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
     {
         let values = values.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("values", &*format!("{values:?}"));
 
-        let result: Result<Vec<Self::Raw>, _> = db.get_by_column(column, values).await;
+        let result: Result<Vec<Self::Raw>, _> = db.get_by_column(column, values, Self::selection()).await;
         match result {
             Ok(records) => Ok(records
                 .into_iter()
@@ -198,15 +232,20 @@ pub trait DbGet: DbEntity {
         P: Borrow<Page> + Debug + Send,
 
         // Query bounds
-        Self::Table: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw, IsNotDeletedFilter = F>,
+        ht::Select<Self::Table, Self::Selection>:
+            IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw, IsNotDeletedFilter = F>,
         F: Paginate + Send,
         <F as AsQuery>::Query: 'query,
-        Paginated<<F as AsQuery>::Query>: Send + LoadQuery<'query, D::AsyncConnection, Self::Raw>,
+        Paginated<<F as AsQuery>::Query>: Send,
+
+        Paginated<<F as AsQuery>::Query>: LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
+
+        Self::Selection: 'query,
     {
         if page.borrow().is_empty() {
             return Ok(vec![]);
         }
-        let result: Result<Vec<Self::Raw>, _> = db.get_page(page).await;
+        let result: Result<Vec<Self::Raw>, _> = db.get_page(page, Self::selection()).await;
         match result {
             Ok(records) => Ok(records
                 .into_iter()
@@ -233,10 +272,15 @@ pub trait DbGet: DbEntity {
         P: Borrow<Page> + Debug + for<'a> PageRef<'a> + Send,
 
         // Query bounds
-        Self::Table: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw, IsNotDeletedFilter = F>,
+        ht::Select<Self::Table, Self::Selection>:
+            IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw, IsNotDeletedFilter = F>,
         F: Paginate + Send,
         <F as AsQuery>::Query: 'query,
-        Paginated<<F as AsQuery>::Query>: Send + LoadQuery<'query, D::AsyncConnection, Self::Raw>,
+        Paginated<<F as AsQuery>::Query>: Send,
+
+        Paginated<<F as AsQuery>::Query>: LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
+
+        Self::Selection: 'query,
     {
         let pages = pages.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("pages", &*format!("{pages:?}"));
@@ -245,7 +289,7 @@ pub trait DbGet: DbEntity {
             return Ok(vec![]);
         }
 
-        let result: Result<Vec<Self::Raw>, _> = db.get_pages(pages).await;
+        let result: Result<Vec<Self::Raw>, _> = db.get_pages(pages, Self::selection()).await;
         match result {
             Ok(records) => Ok(records
                 .into_iter()
@@ -267,7 +311,7 @@ pub trait DbInsert: DbEntity {
 
     #[framed]
     #[instrument(skip_all)]
-    async fn insert<'query, 'v, D>(
+    async fn insert<'query, 'v, D, Op>(
         db: &D,
         posts: impl IntoIterator<Item = Self::PostHelper<'v>> + Send + 'v,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
@@ -277,17 +321,33 @@ pub trait DbInsert: DbEntity {
 
         <Self::Raw as TryInto<Self>>::Error: Send,
 
-        // Insertable bounds
-        Vec<Self::Post<'v>>: Insertable<Self::Table> + Send,
-        <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values: Send,
         <Self::Table as QuerySource>::FromClause: Send,
+
+        // Insertable bounds
+        Vec<Self::Post<'v>>: Insertable<Self::Table>,
+        <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values: Send + 'query,
+        Self::Raw: Send,
 
         // Insert bounds
         InsertStatement<Self::Table, <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values>:
-            LoadQuery<'query, D::AsyncConnection, Self::Raw>,
+            Into<InsertStatement<Self::Table, <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values, Op>>,
+        InsertStatement<
+            Self::Table,
+            <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values,
+            Op,
+            ReturningClause<Self::Selection>,
+        >: LoadQuery<'query, D::AsyncConnection, Self::Raw>,
 
         // Audit bounds
         Self::Raw: MaybeAudit<'query, D::AsyncConnection>,
+
+        // Selection bounds
+        Op: Send + 'query,
+        Self::Selection: SelectableExpression<Self::Table> + Send + ValidGrouping<()>,
+        <Self::Selection as ValidGrouping<()>>::IsAggregate: diesel::expression::MixedAggregates<
+            diesel::expression::is_aggregate::No,
+            Output = diesel::expression::is_aggregate::No,
+        >,
     {
         let db_post_helpers = posts.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("posts", &*format!("{db_post_helpers:?}"));
@@ -298,7 +358,7 @@ pub trait DbInsert: DbEntity {
 
         let db_posts = db_post_helpers.into_iter().map(Self::PostHelper::into);
 
-        db.insert(db_posts)
+        db.insert(db_posts, Self::selection())
             .map(|result| match result {
                 Ok(records) => Ok(records),
                 Err(err) => {
@@ -320,7 +380,7 @@ pub trait DbInsert: DbEntity {
 
     #[framed]
     #[instrument(skip_all)]
-    async fn insert_one<'query, 'v, D>(
+    async fn insert_one<'query, 'v, D, Op>(
         db: &D,
         post: Self::PostHelper<'v>,
     ) -> Result<Self, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
@@ -330,21 +390,38 @@ pub trait DbInsert: DbEntity {
 
         <Self::Raw as TryInto<Self>>::Error: Send,
 
-        // Insertable bounds
-        [Self::Post<'v>; 1]: HasTable + Insertable<Self::Table> + Send,
-        <[Self::Post<'v>; 1] as Insertable<Self::Table>>::Values: Send + 'query,
         <Self::Table as QuerySource>::FromClause: Send,
 
+        // Insertable bounds
+        Vec<Self::Post<'v>>: Insertable<Self::Table>,
+        <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values: Send + 'query,
+        Self::Raw: Send,
+
         // Insert bounds
-        InsertStatement<Self::Table, <[Self::Post<'v>; 1] as Insertable<Self::Table>>::Values>:
-            LoadQuery<'query, D::AsyncConnection, Self::Raw>,
+        InsertStatement<Self::Table, <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values>:
+            Into<InsertStatement<Self::Table, <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values, Op>>,
+        InsertStatement<
+            Self::Table,
+            <Vec<Self::Post<'v>> as Insertable<Self::Table>>::Values,
+            Op,
+            ReturningClause<Self::Selection>,
+        >: LoadQuery<'query, D::AsyncConnection, Self::Raw> + QueryFragment<D::Backend>,
 
         // Audit bounds
         Self::Raw: MaybeAudit<'query, D::AsyncConnection>,
+
+        // Selection bounds
+        Op: Send + 'query,
+        Self::Selection: SelectableExpression<Self::Table> + Send + ValidGrouping<()>,
+        ReturningClause<Self::Selection>: QueryFragment<D::Backend>,
+        <Self::Selection as ValidGrouping<()>>::IsAggregate: diesel::expression::MixedAggregates<
+            diesel::expression::is_aggregate::No,
+            Output = diesel::expression::is_aggregate::No,
+        >,
     {
         tracing::Span::current().record("post", &*format!("{post:?}"));
 
-        db.insert_one(post.into())
+        db.insert([post.into()], Self::selection())
             .map(|result| match result {
                 Ok(record) => Ok(record),
                 Err(err) => {
@@ -355,7 +432,13 @@ pub trait DbInsert: DbEntity {
             })
             .await
             .map_err(DbEntityError::from)
-            .and_then(|record| record.try_into().map_err(DbEntityError::conversion))
+            .and_then(|mut records| {
+                records
+                    .pop()
+                    .ok_or_else(|| diesel::result::Error::NotFound)?
+                    .try_into()
+                    .map_err(DbEntityError::conversion)
+            })
     }
 }
 
@@ -383,7 +466,7 @@ pub trait DbUpdate: DbEntity {
         // Id bounds
         Self::Id: Clone + Hash + Eq + Send + Sync,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
-        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
+        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods + Send + Sync,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
         // Changeset bounds
@@ -394,17 +477,42 @@ pub trait DbUpdate: DbEntity {
 
         // UpdateStatement bounds
         Self::Table: FindDsl<Self::Id>,
-        ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
-        <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
-        ht::Update<ht::Find<Self::Table, Self::Id>, Self::Patch<'v>>:
-            AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
+        ht::Find<Self::Table, Self::Id>: IntoUpdateTarget,
+        <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send + 'query,
+        UpdateStatement<
+            <ht::Find<Self::Table, Self::Id> as HasTable>::Table,
+            <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause,
+            <Self::Patch<'v> as AsChangeset>::Changeset,
+        >: AsQuery,
+        UpdateStatement<
+            <ht::Find<Self::Table, Self::Id> as HasTable>::Table,
+            <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause,
+            <Self::Patch<'v> as AsChangeset>::Changeset,
+            ReturningClause<Self::Selection>,
+        >: AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
 
-        // Filter bounds for records whose changesets do not include any changes
-        Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
+        Self::Id: AsExpression<SqlTypeOf<<Self::Table as Table>::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
+
+        Self::Table: FindDsl<Self::Id> + SelectDsl<Self::Selection> + Send + Sync + Table + 'query,
+        ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + Send,
+        <Self::Table as QuerySource>::FromClause: Send,
+
+        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: Send,
+
+        Self::Raw: MaybeAudit<'query, D::AsyncConnection> + Send,
+
+        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods + Send + Sync,
+        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
+        ht::Select<Self::Table, Self::Selection>:
+            FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F> + Send,
         F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
 
-        // Audit bounds
-        Self::Raw: MaybeAudit<'query, D::AsyncConnection>,
+        // Selection bounds
+        Self::Selection: Clone + SelectableExpression<Self::Table> + Send + ValidGrouping<()> + Sync + 'query,
+        <Self::Selection as ValidGrouping<()>>::IsAggregate: diesel::expression::MixedAggregates<
+            diesel::expression::is_aggregate::No,
+            Output = diesel::expression::is_aggregate::No,
+        >,
     {
         let db_patch_helpers = patches.into_iter().collect::<Vec<_>>();
         tracing::Span::current().record("patches", &*format!("{db_patch_helpers:?}"));
@@ -413,24 +521,27 @@ pub trait DbUpdate: DbEntity {
             return Ok(vec![]);
         }
 
-        db.update(db_patch_helpers.into_iter().map(Self::PatchHelper::into))
-            .map(|result| match result {
-                Ok(records) => Ok(records),
-                Err(err) => {
-                    let err = err;
-                    error!(target: module_path!(), error = %err);
-                    Err(err)
-                }
-            })
-            .await
-            .map_err(DbEntityError::from)
-            .and_then(|records| {
-                records
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_, _>>()
-                    .map_err(DbEntityError::conversion)
-            })
+        db.update(
+            db_patch_helpers.into_iter().map(Self::PatchHelper::into),
+            Self::selection(),
+        )
+        .map(|result| match result {
+            Ok(records) => Ok(records),
+            Err(err) => {
+                let err = err;
+                error!(target: module_path!(), error = %err);
+                Err(err)
+            }
+        })
+        .await
+        .map_err(DbEntityError::from)
+        .and_then(|records| {
+            records
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()
+                .map_err(DbEntityError::conversion)
+        })
     }
 
     #[framed]
@@ -446,7 +557,7 @@ pub trait DbUpdate: DbEntity {
         // Id bounds
         Self::Id: Clone + Hash + Eq + Send + Sync,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
-        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
+        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods + Send + Sync,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
         // Changeset bounds
@@ -457,21 +568,46 @@ pub trait DbUpdate: DbEntity {
 
         // UpdateStatement bounds
         Self::Table: FindDsl<Self::Id>,
-        ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + IntoUpdateTarget + Send,
-        <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send,
-        ht::Update<ht::Find<Self::Table, Self::Id>, Self::Patch<'v>>:
-            AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
+        ht::Find<Self::Table, Self::Id>: IntoUpdateTarget,
+        <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause: Send + 'query,
+        UpdateStatement<
+            <ht::Find<Self::Table, Self::Id> as HasTable>::Table,
+            <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause,
+            <Self::Patch<'v> as AsChangeset>::Changeset,
+        >: AsQuery,
+        UpdateStatement<
+            <ht::Find<Self::Table, Self::Id> as HasTable>::Table,
+            <ht::Find<Self::Table, Self::Id> as IntoUpdateTarget>::WhereClause,
+            <Self::Patch<'v> as AsChangeset>::Changeset,
+            ReturningClause<Self::Selection>,
+        >: AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
 
-        // Filter bounds for records whose changesets do not include any changes
-        Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F>,
+        Self::Id: AsExpression<SqlTypeOf<<Self::Table as Table>::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
+
+        Self::Table: FindDsl<Self::Id> + SelectDsl<Self::Selection> + Send + Sync + Table + 'query,
+        ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + Send,
+        <Self::Table as QuerySource>::FromClause: Send,
+
+        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: Send,
+
+        Self::Raw: MaybeAudit<'query, D::AsyncConnection> + Send,
+
+        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods + Send + Sync,
+        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
+        ht::Select<Self::Table, Self::Selection>:
+            FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, Vec<Self::Id>>, Output = F> + Send,
         F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
 
-        // Audit bounds
-        Self::Raw: MaybeAudit<'query, D::AsyncConnection>,
+        // Selection bounds
+        Self::Selection: Clone + SelectableExpression<Self::Table> + Send + ValidGrouping<()> + Sync + 'query,
+        <Self::Selection as ValidGrouping<()>>::IsAggregate: diesel::expression::MixedAggregates<
+            diesel::expression::is_aggregate::No,
+            Output = diesel::expression::is_aggregate::No,
+        >,
     {
         tracing::Span::current().record("patch", &*format!("{patch:?}"));
 
-        db.update([patch.into()])
+        db.update([patch.into()], Self::selection())
             .map(|result| match result {
                 Ok(mut records) => Ok(records.pop().ok_or(diesel::result::Error::NotFound)?),
                 Err(err) => {
@@ -508,13 +644,21 @@ pub trait DbDelete: DbEntity {
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
-        Self::Raw:
-            Deletable<'query, D::AsyncConnection, Self::Table, I, Self::Id, Self::DeletedAt, Self::DeletePatch<'v>>,
+        Self::Raw: Deletable<
+            'query,
+            D::AsyncConnection,
+            Self::Table,
+            I,
+            Self::Id,
+            Self::DeletedAt,
+            Self::DeletePatch<'v>,
+            Self::Selection,
+        >,
     {
         db.raw_tx(move |conn| {
             async move {
-                match Self::Raw::maybe_soft_delete(conn, ids).await {
-                    Either::Left(ids) => Self::Raw::hard_delete(conn, ids).await,
+                match Self::Raw::maybe_soft_delete(conn, ids, Self::selection()).await {
+                    Either::Left(ids) => Self::Raw::hard_delete(conn, ids, Self::selection()).await,
                     Either::Right(result) => result,
                 }
             }
@@ -540,20 +684,273 @@ pub trait DbDelete: DbEntity {
     }
 }
 
-/// DbEntity is automatically implemented for any type which implements Audit and HasTable
-impl<T, Tab, Id> DbEntity for T
-where
-    T: Clone + HasTable<Table = Tab> + Send + 'static,
-    Tab: Table + QueryId + Send,
+impl<T: DbEntity> DbGet for T {}
 
-    Id: AsExpression<SqlTypeOf<Tab::PrimaryKey>>,
-    for<'a> &'a T: Identifiable<Id = &'a Id>,
-    Tab::PrimaryKey: Expression + ExpressionMethods,
-    <Tab::PrimaryKey as Expression>::SqlType: SqlType,
-{
-    type Raw = T;
-    type Table = Tab;
-    type Id = Id;
+/// utility trait for converting from tuples of tuples into flattened tuples
+pub trait SelectionInto<T> {
+    fn selection_into(self) -> T;
 }
 
-impl<T: DbEntity> DbGet for T {}
+macro_rules! impl_selection_into {
+    ($( ($(($($ident:ident,)*),)*) )*) => {
+        $(
+            impl<$($($ident,)*)*> SelectionInto<($($($ident,)*)*)> for ($(($($ident,)*),)*) {
+                fn selection_into(self) -> ($($($ident,)*)*) {
+                    #[allow(non_snake_case)]
+                    let ($(($($ident,)*),)*) = self;
+                    ($($($ident,)*)*)
+                }
+            }
+        )*
+    };
+}
+
+// implement in multiples of 12 (largest number of items in a tuple which implement Debug, Default, etc.)
+// goes up to 64
+impl_selection_into!(((A1,),)((A1, B1,),)((A1, B1, C1,),)((A1, B1, C1, D1,),)((
+    A1, B1, C1, D1, E1,
+),)((A1, B1, C1, D1, E1, F1,),)((A1, B1, C1, D1, E1, F1, G1,),)((
+    A1, B1, C1, D1, E1, F1, G1, H1,
+),)((A1, B1, C1, D1, E1, F1, G1, H1, I1,),)((
+    A1, B1, C1, D1, E1, F1, G1, H1, I1, J1,
+),)((A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1,),)((
+    A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,
+),)((A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,), (A2,),)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2,),
+)((A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,), (A2, B2, C2,),)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5, I5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5, I5, J5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5, I5, J5, K5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5, I5, J5, K5, L5,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5, I5, J5, K5, L5,),
+    (A6,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5, I5, J5, K5, L5,),
+    (A6, B6,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5, I5, J5, K5, L5,),
+    (A6, B6, C6,),
+)(
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1, K1, L1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2, K2, L2,),
+    (A3, B3, C3, D3, E3, F3, G3, H3, I3, J3, K3, L3,),
+    (A4, B4, C4, D4, E4, F4, G4, H4, I4, J4, K4, L4,),
+    (A5, B5, C5, D5, E5, F5, G5, H5, I5, J5, K5, L5,),
+    (A6, B6, C6, D6,),
+));

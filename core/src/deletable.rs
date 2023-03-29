@@ -1,16 +1,20 @@
 use crate::*;
 use ::diesel::associations::HasTable;
+use ::diesel::backend::Backend;
 use ::diesel::dsl::SqlTypeOf;
-use ::diesel::expression::{AsExpression, Expression};
+use ::diesel::expression::{AsExpression, Expression, ValidGrouping};
 use ::diesel::expression_methods::ExpressionMethods;
 use ::diesel::helper_types as ht;
+use ::diesel::query_builder::ReturningClause;
 use ::diesel::query_builder::*;
 use ::diesel::query_dsl::methods::FilterDsl;
 use ::diesel::query_dsl::methods::FindDsl;
+use ::diesel::query_dsl::select_dsl::SelectDsl;
 use ::diesel::query_source::QuerySource;
 use ::diesel::result::Error;
 use ::diesel::sql_types::{Nullable, SqlType, Timestamp};
 use ::diesel::Identifiable;
+use ::diesel::SelectableExpression;
 use ::diesel::{Column, Table};
 use ::diesel_async::methods::*;
 use ::diesel_async::{AsyncConnection, RunQueryDsl};
@@ -20,10 +24,11 @@ use ::std::collections::HashMap;
 use ::std::fmt::Debug;
 use ::std::hash::Hash;
 
-pub trait Deletable<'query, C, Tab, I, Id, DeletedAt, DeletePatch>: Sized {
+pub trait Deletable<'query, C, Tab, I, Id, DeletedAt, DeletePatch, Selection>: Sized {
     fn hard_delete<'life0, 'async_trait>(
         conn: &'life0 mut C,
-        ids: I,
+        input: I,
+        selection: Selection,
     ) -> BoxFuture<'async_trait, Result<Vec<Self>, Error>>
     where
         'life0: 'async_trait,
@@ -32,7 +37,8 @@ pub trait Deletable<'query, C, Tab, I, Id, DeletedAt, DeletePatch>: Sized {
 
     fn maybe_soft_delete<'life0, 'async_trait>(
         conn: &'life0 mut C,
-        ids: I,
+        input: I,
+        selection: Selection,
     ) -> BoxFuture<'async_trait, Either<I, Result<Vec<Self>, Error>>>
     where
         'life0: 'async_trait,
@@ -66,35 +72,39 @@ where
     type SqlType = diesel::pg::sql_types::Timestamptz;
 }
 
-impl<'query, C, Tab, I, Id, F1, F2, DeletedAt, DeletePatch, T> Deletable<'query, C, Tab, I, Id, DeletedAt, DeletePatch>
-    for T
+impl<'query, DB, C, Tab, I, Id, F, DeletedAt, DeletePatch, Selection, T>
+    Deletable<'query, C, Tab, I, Id, DeletedAt, DeletePatch, Selection> for T
 where
-    C: AsyncConnection + 'static,
+    T: HasTable<Table = Tab> + MaybeAudit<'query, C> + Send,
+
+    DB: Backend,
+    C: AsyncConnection<Backend = DB> + 'static,
 
     // Id bounds
     I: IntoIterator + Send + Sized + 'query,
-    I::Item: Clone + Debug + Eq + Hash + Send + Sync + AsExpression<SqlTypeOf<Tab::PrimaryKey>>,
+    I::Item: Debug + Send + Sync + Into<Id>,
     Id: AsExpression<SqlTypeOf<Tab::PrimaryKey>>,
 
     // table bounds
     Tab: Table + QueryId + Send,
     Tab::PrimaryKey: Expression + ExpressionMethods,
     <Tab::PrimaryKey as Expression>::SqlType: SqlType,
-    Self: Send + HasTable<Table = Tab>,
 
     // delete bounds
-    Tab: FilterDsl<ht::EqAny<Tab::PrimaryKey, I>, Output = F1>,
-    Tab: FilterDsl<ht::EqAny<Tab::PrimaryKey, Vec<Id>>, Output = F2>,
-    F1: IntoUpdateTarget + Send + 'query,
-    DeleteStatement<F1::Table, F1::WhereClause>:
-        LoadQuery<'query, C, Self> + QueryFragment<C::Backend> + QueryId + Send + 'query,
+    Tab: FilterDsl<ht::EqAny<Tab::PrimaryKey, Vec<Id>>, Output = F>,
+    <Tab as QuerySource>::FromClause: Send,
+    F: HasTable<Table = Tab> + IntoUpdateTarget + Send + 'query,
+    <F as IntoUpdateTarget>::WhereClause: Send,
+    DeleteStatement<F::Table, F::WhereClause, ReturningClause<Selection>>:
+        LoadQuery<'query, C, T> + QueryFragment<DB> + QueryId + Send + 'query,
 
-    // Audit bounds
-    Self: MaybeAudit<'query, C>,
+    // Selection bounds
+    Selection: SelectableExpression<Tab> + Send + ValidGrouping<()>,
 {
-    default fn hard_delete<'life0, 'async_trait>(
+    fn hard_delete<'life0, 'async_trait>(
         conn: &'life0 mut C,
-        ids: I,
+        input: I,
+        selection: Selection,
     ) -> BoxFuture<'async_trait, Result<Vec<Self>, Error>>
     where
         'query: 'async_trait,
@@ -102,8 +112,12 @@ where
         Self: 'async_trait,
     {
         async move {
-            let query = Self::table().filter(Self::table().primary_key().eq_any(ids));
-            let records = diesel::delete(query).get_results(conn).await?;
+            let query = Self::table().filter(
+                Self::table()
+                    .primary_key()
+                    .eq_any(input.into_iter().map(Into::<Id>::into).collect::<Vec<_>>()),
+            );
+            let records = diesel::delete(query).returning(selection).get_results(conn).await?;
 
             Self::maybe_insert_audit_records(conn, &records).await?;
 
@@ -114,50 +128,52 @@ where
 
     #[allow(unused_variables)]
     default fn maybe_soft_delete<'life0, 'async_trait>(
-        conn: &'life0 mut C,
-        ids: I,
+        _: &'life0 mut C,
+        input: I,
+        _: Selection,
     ) -> BoxFuture<'async_trait, Either<I, Result<Vec<Self>, Error>>>
     where
         'query: 'async_trait,
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        Box::pin(ready(Either::Left(ids)))
+        Box::pin(ready(Either::Left(input)))
     }
 }
 
-impl<'query, C, Tab, I, Id, F1, F2, DeletedAt, DeletePatch, T> Deletable<'query, C, Tab, I, Id, DeletedAt, DeletePatch>
-    for T
+impl<'query, DB, C, Tab, I, Id, F, DeletedAt, DeletePatch, Selection, T>
+    Deletable<'query, C, Tab, I, Id, DeletedAt, DeletePatch, Selection> for T
 where
-    T: SoftDeletable,
+    T: HasTable<Table = Tab> + MaybeAudit<'query, C> + Send,
 
-    C: AsyncConnection + 'static,
+    DB: Backend,
+    C: AsyncConnection<Backend = DB> + 'static,
 
     // Id bounds
     I: IntoIterator + Send + Sized + 'query,
-    I::Item: Clone + Debug + Eq + Hash + Send + Sync + AsExpression<SqlTypeOf<Tab::PrimaryKey>>,
+    I::Item: Debug + Send + Sync + Into<Id>,
     Id: AsExpression<SqlTypeOf<Tab::PrimaryKey>>,
 
     // table bounds
-    Tab: Table + QueryId + Send + 'query,
+    Tab: Table + QueryId + Send,
     Tab::PrimaryKey: Expression + ExpressionMethods,
     <Tab::PrimaryKey as Expression>::SqlType: SqlType,
-    Self: Send + HasTable<Table = Tab>,
 
     // delete bounds
-    Tab: FilterDsl<ht::EqAny<Tab::PrimaryKey, Vec<I::Item>>, Output = F1>,
-    Tab: FilterDsl<ht::EqAny<Tab::PrimaryKey, Vec<Id>>, Output = F2>,
-    F1: IntoUpdateTarget + Send + 'query,
-    DeleteStatement<F1::Table, F1::WhereClause>:
-        LoadQuery<'query, C, Self> + QueryFragment<C::Backend> + QueryId + Send + 'query,
+    Tab: FilterDsl<ht::EqAny<Tab::PrimaryKey, Vec<Id>>, Output = F>,
+    <Tab as QuerySource>::FromClause: Send,
+    F: HasTable<Table = Tab> + IntoUpdateTarget + Send + 'query,
+    <F as IntoUpdateTarget>::WhereClause: Send,
+    DeleteStatement<F::Table, F::WhereClause, ReturningClause<Selection>>:
+        LoadQuery<'query, C, T> + QueryFragment<DB> + QueryId + Send + 'query,
 
-    // Audit bounds
-    Self: MaybeAudit<'query, C>,
+    // Selection bounds
+    Selection: SelectableExpression<Tab> + Send + ValidGrouping<()>,
 
     // specialization
     Id: Clone + Eq + Hash + Send + Sync + 'query,
 
-    for<'a> &'a Self: Identifiable<Id = &'a Id>,
+    for<'a> &'a T: Identifiable<Id = &'a Id>,
 
     for<'a> &'a DeletePatch: HasTable<Table = Tab> + Identifiable<Id = &'a Id> + IntoUpdateTarget,
     for<'a> <&'a DeletePatch as IntoUpdateTarget>::WhereClause: Send,
@@ -172,14 +188,34 @@ where
     Tab: FindDsl<Id>,
     ht::Find<Tab, Id>: HasTable<Table = Tab> + IntoUpdateTarget + Send,
     <ht::Find<Tab, Id> as IntoUpdateTarget>::WhereClause: Send,
-    ht::Update<ht::Find<Tab, Id>, DeletePatch>: AsQuery + LoadQuery<'query, C, Self> + Send,
+    UpdateStatement<
+        <ht::Find<Tab, Id> as HasTable>::Table,
+        <ht::Find<Tab, Id> as IntoUpdateTarget>::WhereClause,
+        <DeletePatch as AsChangeset>::Changeset,
+    >: AsQuery,
+    UpdateStatement<
+        <ht::Find<Tab, Id> as HasTable>::Table,
+        <ht::Find<Tab, Id> as IntoUpdateTarget>::WhereClause,
+        <DeletePatch as AsChangeset>::Changeset,
+        ReturningClause<Selection>,
+    >: AsQuery + LoadQuery<'query, C, T> + Send,
 
     // Filter bounds for records whose changesets do not include any changes
-    F2: IsNotDeleted<'query, C, Self, Self>,
+    F: IsNotDeleted<'query, C, T, T>,
+    <F as IsNotDeleted<'query, C, T, T>>::IsNotDeletedFilter: SelectDsl<Selection>,
+    for<'a> ht::Select<<F as IsNotDeleted<'a, C, T, T>>::IsNotDeletedFilter, Selection>: LoadQuery<'a, C, T> + Send,
+
+    // Selection bounds
+    Selection: Clone + Sync,
+    <Selection as ValidGrouping<()>>::IsAggregate: diesel::expression::MixedAggregates<
+        diesel::expression::is_aggregate::No,
+        Output = diesel::expression::is_aggregate::No,
+    >,
 {
     default fn maybe_soft_delete<'life0, 'async_trait>(
         conn: &'life0 mut C,
-        ids: I,
+        input: I,
+        selection: Selection,
     ) -> BoxFuture<'async_trait, Either<I, Result<Vec<Self>, Error>>>
     where
         'query: 'async_trait,
@@ -188,7 +224,7 @@ where
     {
         Box::pin(async move {
             let result = (move || async move {
-                let patches = ids.into_iter().map(Into::into).collect::<Vec<DeletePatch>>();
+                let patches = input.into_iter().map(Into::into).collect::<Vec<DeletePatch>>();
                 let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
 
                 let no_change_patch_ids = patches
@@ -212,6 +248,7 @@ where
                 for patch in patches.into_iter().filter(|patch| patch.includes_changes()) {
                     let record = diesel::update(Self::table().find(patch.id().to_owned()))
                         .set(patch)
+                        .returning(selection.clone())
                         .get_result::<Self>(conn)
                         .await?;
                     all_updated.push(record);
@@ -221,7 +258,7 @@ where
 
                 let filter = FilterDsl::filter(Self::table(), Self::table().primary_key().eq_any(no_change_patch_ids))
                     .is_not_deleted();
-                let unchanged_records = filter.get_results::<Self>(&mut *conn).await?;
+                let unchanged_records = filter.select(selection).get_results::<Self>(&mut *conn).await?;
 
                 let mut all_records = unchanged_records
                     .into_iter()

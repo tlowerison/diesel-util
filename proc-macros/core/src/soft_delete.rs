@@ -56,14 +56,18 @@ impl TryFrom<&syn::DeriveInput> for SoftDeleteAttribute {
 pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
     let ast: syn::DeriveInput = syn::parse2(tokens)?;
 
-    let diesel_attribute = DieselAttribute::try_from(&ast).expect("SoftDelete could not parse `diesel` attribute");
+    let (diesel_attribute, diesel_attr) = DieselAttribute::try_parse(&ast)?
+        .ok_or_else(|| Error::new_spanned(&ast, "SoftDelete could not parse `diesel` attribute"))?;
     let soft_delete_attribute =
         SoftDeleteAttribute::try_from(&ast).expect("SoftDelete could not parse `soft_delete` attribute");
 
     let ident = &ast.ident;
-    let table_name = diesel_attribute
-        .table_name
-        .expect("SoftDelete was unable to extract table_name from a diesel(table_name = `...`) attribute");
+    let table_name = diesel_attribute.table_name.ok_or_else(|| {
+        Error::new_spanned(
+            diesel_attr,
+            "Audit was unable to extract table_name from a diesel(table_name = `...`) attribute",
+        )
+    })?;
     let deleted_at_column_name = soft_delete_attribute
         .deleted_at
         .unwrap_or_else(|| format_ident!("deleted_at"));
@@ -99,12 +103,12 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
     let additional_impls = if soft_delete_attribute.db_entity.is_some() {
         let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
         quote!(
-            impl diesel_util::SoftDeletable for #db_entity_path {
-                type DeletedAt = (#table_name::#deleted_at_column_name, diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
+            impl ::diesel_util::SoftDeletable for #db_entity_path {
+                type DeletedAt = (#table_name::#deleted_at_column_name, ::diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
             }
 
-            impl #impl_generics diesel_util::DbDelete for #ident #ty_generics #where_clause {
-                type DeletedAt = (#table_name::#deleted_at_column_name, diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
+            impl #impl_generics ::diesel_util::DbDelete for #ident #ty_generics #where_clause {
+                type DeletedAt = (#table_name::#deleted_at_column_name, ::diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
                 type DeletePatch<'a> = #soft_delete_ident;
             }
         )
@@ -113,8 +117,8 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
     };
 
     let tokens = quote! {
-        impl diesel_util::SoftDeletable for #ident {
-            type DeletedAt = (#table_name::#deleted_at_column_name, diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
+        impl ::diesel_util::SoftDeletable for #ident {
+            type DeletedAt = (#table_name::#deleted_at_column_name, ::diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
         }
 
         #[derive(AsChangeset, Clone, Debug, Identifiable, IncludesChanges)]
@@ -124,18 +128,24 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
             deleted_at: NaiveDateTime,
         }
 
-        impl<T: std::borrow::Borrow<#primary_key_ty> + Clone> From<T> for #soft_delete_ident {
+        impl<T: ::std::borrow::Borrow<#primary_key_ty> + Clone> From<T> for #soft_delete_ident {
             fn from(id: T) -> Self {
-                use std::borrow::Borrow;
+                use ::std::borrow::Borrow;
                 Self {
                     id: id.borrow().clone(),
-                    #deleted_at_column_name: diesel_util::chrono::Utc::now().naive_utc(),
+                    #deleted_at_column_name: ::diesel_util::chrono::Utc::now().naive_utc(),
                 }
             }
         }
 
-        impl diesel_util::DbDelete for #db_entity_path {
-            type DeletedAt = (#table_name::#deleted_at_column_name, diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
+        impl From<#soft_delete_ident> for #primary_key_ty {
+            fn from(value: #soft_delete_ident) -> Self {
+                value.id.clone()
+            }
+        }
+
+        impl ::diesel_util::DbDelete for #db_entity_path {
+            type DeletedAt = (#table_name::#deleted_at_column_name, ::diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
             type DeletePatch<'a> = #soft_delete_ident;
         }
 

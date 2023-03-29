@@ -18,6 +18,14 @@ pub fn derive_db(tokens: TokenStream) -> TokenStream {
     }
 }
 
+#[proc_macro_derive(DbEntity, attributes(db_entity))]
+pub fn derive_db_entity(tokens: TokenStream) -> TokenStream {
+    match core::derive_db_entity(tokens.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
 #[proc_macro_derive(Enum, attributes(id))]
 pub fn derive_enum(tokens: TokenStream) -> TokenStream {
     match core::derive_enum(tokens.into()) {

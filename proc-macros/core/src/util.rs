@@ -1,51 +1,84 @@
-use proc_macro2::TokenTree;
-use syn::parse::{Error, Parse, ParseStream};
-use syn::{DeriveInput, Ident, Token};
+use std::str::FromStr;
 
-#[derive(Default, Clone)]
+use proc_macro2::{TokenStream, TokenTree};
+use syn::parse::{Error, Parse, ParseStream};
+use syn::{DeriveInput, Ident, Path, Token};
+
+#[derive(Clone, Default, Debug)]
 pub struct DieselAttribute {
+    pub column_name: Option<Ident>,
     pub table_name: Option<Ident>,
+    pub table_path: Option<Path>,
 }
 
 impl Parse for DieselAttribute {
     fn parse(parse_stream: ParseStream) -> syn::Result<Self> {
-        let mut table_name: Option<Ident> = None;
+        let mut column_name: Option<Ident> = None;
+        let mut table_path: Option<Path> = None;
 
         while !parse_stream.is_empty() {
-            if let Some::<Ident>(arg) = parse_stream.parse().ok() {
-                if &*format!("{arg}") == "table_name" {
-                    let eq: Option<Token![=]> = parse_stream.parse().ok();
-                    if eq.is_some() {
-                        let ident: Option<Ident> = parse_stream.parse().ok();
-                        if let Some(ident) = ident {
-                            table_name = Some(ident);
+            if parse_stream.peek(syn::Ident) {
+                let arg: syn::Ident = parse_stream.parse()?;
+                match &*format!("{arg}") {
+                    "table_name" => {
+                        let eq: Option<Token![=]> = parse_stream.parse().ok();
+                        if eq.is_some() {
+                            let path: Option<Path> = parse_stream.parse().ok();
+                            if let Some(path) = path {
+                                table_path = Some(path);
+                            } else {
+                                let _: TokenTree = parse_stream.parse()?;
+                            }
                         } else {
                             let _: TokenTree = parse_stream.parse()?;
                         }
-                    } else {
+                    }
+                    "column_name" => {
+                        let eq: Option<Token![=]> = parse_stream.parse().ok();
+                        if eq.is_some() {
+                            let lit_str: Option<syn::LitStr> = parse_stream.parse().ok();
+                            if let Some(lit_str) = lit_str {
+                                let tokens = TokenStream::from_str(&lit_str.value())
+                                    .map_err(|err| Error::new_spanned(&lit_str, err))?;
+                                let ident =
+                                    syn::parse2::<Ident>(tokens).map_err(|err| Error::new_spanned(&lit_str, err))?;
+                                column_name = Some(ident);
+                            } else {
+                                let _: TokenTree = parse_stream.parse()?;
+                            }
+                        } else {
+                            let _: TokenTree = parse_stream.parse()?;
+                        }
+                    }
+                    _ => {
                         let _: TokenTree = parse_stream.parse()?;
                     }
-                } else {
-                    let _: TokenTree = parse_stream.parse()?;
                 }
-            } else {
+            } else if !parse_stream.is_empty() {
                 let _: TokenTree = parse_stream.parse()?;
             }
         }
 
-        Ok(Self { table_name })
+        let table_name = table_path
+            .as_ref()
+            .map(|path| path.segments.last().unwrap().ident.clone());
+
+        Ok(Self {
+            column_name,
+            table_name,
+            table_path,
+        })
     }
 }
 
-impl TryFrom<&DeriveInput> for DieselAttribute {
-    type Error = Error;
-    fn try_from(ast: &DeriveInput) -> Result<Self, Self::Error> {
+impl DieselAttribute {
+    pub fn try_parse(ast: &DeriveInput) -> Result<Option<(DieselAttribute, &syn::Attribute)>, Error> {
         for attr in ast.attrs.iter() {
             if attr.path.is_ident("diesel") {
-                return attr.parse_args();
+                return Ok(Some((attr.parse_args()?, attr)));
             }
         }
-        Ok(Default::default())
+        Ok(None)
     }
 }
 

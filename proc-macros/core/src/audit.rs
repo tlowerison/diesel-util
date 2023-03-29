@@ -64,13 +64,17 @@ impl TryFrom<&syn::DeriveInput> for AuditAttribute {
 pub fn derive_audit(tokens: TokenStream) -> Result<TokenStream, Error> {
     let ast: syn::DeriveInput = parse2(tokens)?;
 
-    let diesel_attribute = DieselAttribute::try_from(&ast).expect("Audit could not parse `diesel` attribute");
+    let (diesel_attribute, diesel_attr) = DieselAttribute::try_parse(&ast)?
+        .ok_or_else(|| Error::new_spanned(&ast, "Audit could not parse `diesel` attribute"))?;
     let audit_attribute = AuditAttribute::try_from(&ast).expect("Audit could not parse `audit` attribute");
 
     let struct_name = ast.ident.clone();
-    let table_name = diesel_attribute
-        .table_name
-        .expect("Audit was unable to extract table_name from a diesel(table_name = `...`) attribute");
+    let table_name = diesel_attribute.table_name.ok_or_else(|| {
+        Error::new_spanned(
+            diesel_attr,
+            "Audit was unable to extract table_name from a diesel(table_name = `...`) attribute",
+        )
+    })?;
 
     let audit_struct_name = audit_attribute
         .struct_name

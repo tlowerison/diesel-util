@@ -83,7 +83,7 @@ where
     // Id bounds
     I: IntoIterator + Send + Sized + 'query,
     I::Item: Debug + Send + Sync + Into<Id>,
-    Id: AsExpression<SqlTypeOf<Tab::PrimaryKey>>,
+    Id: AsExpression<SqlTypeOf<Tab::PrimaryKey>> + Send,
 
     // table bounds
     Tab: Table + QueryId + Send,
@@ -112,11 +112,11 @@ where
         Self: 'async_trait,
     {
         async move {
-            let query = Self::table().filter(
-                Self::table()
-                    .primary_key()
-                    .eq_any(input.into_iter().map(Into::<Id>::into).collect::<Vec<_>>()),
-            );
+            let ids = input.into_iter().map(Into::<Id>::into).collect::<Vec<_>>();
+            if ids.is_empty() {
+                return Ok(vec![]);
+            }
+            let query = Self::table().filter(Self::table().primary_key().eq_any(ids));
             let records = diesel::delete(query).returning(selection).get_results(conn).await?;
 
             Self::maybe_insert_audit_records(conn, &records).await?;
@@ -212,7 +212,7 @@ where
         Output = diesel::expression::is_aggregate::No,
     >,
 {
-    default fn maybe_soft_delete<'life0, 'async_trait>(
+    fn maybe_soft_delete<'life0, 'async_trait>(
         conn: &'life0 mut C,
         input: I,
         selection: Selection,
@@ -225,6 +225,11 @@ where
         Box::pin(async move {
             let result = (move || async move {
                 let patches = input.into_iter().map(Into::into).collect::<Vec<DeletePatch>>();
+
+                if patches.is_empty() {
+                    return Ok(vec![]);
+                }
+
                 let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
 
                 let no_change_patch_ids = patches

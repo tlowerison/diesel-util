@@ -227,7 +227,7 @@ impl Parse for DbFilterOptionalParams {
                 "order_by" => {
                     let _colon: Token![:] = parse_stream.parse()?;
                     let content;
-                    bracketed!(content in parse_stream);
+                    parenthesized!(content in parse_stream);
                     let expr: syn::punctuated::Punctuated<syn::Expr, Token![,]> = content.parse_terminated(syn::Expr::parse)?;
                     order_by = Some(expr.into_iter().collect());
                 },

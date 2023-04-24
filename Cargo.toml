@@ -4,6 +4,7 @@ members = [
   "diesel-util",
   "proc-macros",
 ]
+exclude = ["foo"]
 
 [workspace.package]
 version = "0.1.0"

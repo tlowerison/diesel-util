@@ -201,9 +201,8 @@ where
     >: AsQuery + LoadQuery<'query, C, T> + Send,
 
     // Filter bounds for records whose changesets do not include any changes
-    F: IsNotDeleted<'query, C, T, T>,
-    <F as IsNotDeleted<'query, C, T, T>>::IsNotDeletedFilter: SelectDsl<Selection>,
-    for<'a> ht::Select<<F as IsNotDeleted<'a, C, T, T>>::IsNotDeletedFilter, Selection>: LoadQuery<'a, C, T> + Send,
+    F: SelectDsl<Selection>,
+    ht::Select<F, Selection>: IsNotDeleted<'query, C, T, T>,
 
     // Selection bounds
     Selection: Clone + Sync,
@@ -262,8 +261,9 @@ where
                 Self::maybe_insert_audit_records(conn, &all_updated).await?;
 
                 let filter = FilterDsl::filter(Self::table(), Self::table().primary_key().eq_any(no_change_patch_ids))
+                    .select(selection)
                     .is_not_deleted();
-                let unchanged_records = filter.select(selection).get_results::<Self>(&mut *conn).await?;
+                let unchanged_records = filter.get_results::<Self>(&mut *conn).await?;
 
                 let mut all_records = unchanged_records
                     .into_iter()

@@ -121,11 +121,11 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
             type DeletedAt = (#table_name::#deleted_at_column_name, ::diesel_util::diesel::dsl::SqlTypeOf<#table_name::#deleted_at_column_name>);
         }
 
-        #[derive(AsChangeset, Clone, Debug, Identifiable, IncludesChanges)]
+        #[derive(::diesel_util::diesel::AsChangeset, Clone, Debug, ::diesel_util::diesel::Identifiable, ::diesel_util::IncludesChanges)]
         #[diesel(table_name = #table_name)]
         pub struct #soft_delete_ident {
             id: #primary_key_ty,
-            deleted_at: NaiveDateTime,
+            deleted_at: ::diesel_util::chrono::NaiveDateTime,
         }
 
         impl<T: ::std::borrow::Borrow<#primary_key_ty> + Clone> From<T> for #soft_delete_ident {

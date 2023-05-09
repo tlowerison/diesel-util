@@ -1,8 +1,12 @@
 use diesel::backend::Backend;
+use diesel::backend::HasBindCollector;
+use diesel::helper_types::Asc;
+use diesel::helper_types::Desc;
 use diesel::prelude::*;
 use diesel::query_builder::*;
 use diesel::serialize::ToSql;
 use diesel::sql_types::BigInt;
+use diesel::Column;
 use itertools::Itertools;
 use std::borrow::Borrow;
 use std::cmp::{Ordering, PartialOrd};
@@ -137,10 +141,11 @@ impl Ord for _Page {
 }
 
 #[derive(Debug, Clone, QueryId)]
-pub struct Paginated<T, Q = ()> {
+pub struct Paginated<T, Q = (), PO = ()> {
     query: T,
     _pages: Option<Vec<_Page>>,
     partition: Option<Q>,
+    partition_order: Option<PO>,
 }
 
 pub trait CanPaginate {
@@ -160,6 +165,7 @@ pub trait Paginate: AsQuery + Sized {
                 }]
             }),
             partition: None,
+            partition_order: None,
         }
     }
 
@@ -183,6 +189,7 @@ pub trait Paginate: AsQuery + Sized {
                     .collect(),
             )),
             partition: None,
+            partition_order: None,
         }
     }
 }
@@ -211,8 +218,8 @@ where
     }
 }
 
-impl<T, Q> Paginated<T, Q> {
-    pub fn partition<Expr>(self, expr: Expr) -> Paginated<T, Expr>
+impl<T, Q, PO> Paginated<T, Q, PO> {
+    pub fn partition<Expr>(self, expr: Expr) -> Paginated<T, Expr, PO>
     where
         Expr: Partition + Send,
     {
@@ -220,6 +227,16 @@ impl<T, Q> Paginated<T, Q> {
             query: self.query,
             _pages: self._pages,
             partition: Some(expr),
+            partition_order: self.partition_order,
+        }
+    }
+
+    pub fn partition_order<Expr>(self, expr: Expr) -> Paginated<T, Q, Expr> {
+        Paginated {
+            query: self.query,
+            _pages: self._pages,
+            partition: self.partition,
+            partition_order: Some(expr),
         }
     }
 }
@@ -228,10 +245,89 @@ pub trait Partition {
     fn encode(&self) -> Result<String, diesel::result::Error>;
 }
 
+pub trait PartitionOrder<DB>
+where
+    DB: Backend,
+{
+    fn encode<'a, 'b>(ast_pass: AstPass<'a, 'b, DB>)
+    where
+        DB::QueryBuilder: 'a,
+        <DB as HasBindCollector<'a>>::BindCollector: 'a,
+        DB::MetadataLookup: 'a,
+        'b: 'a;
+}
+
 impl Partition for () {
     fn encode(&self) -> Result<String, diesel::result::Error> {
         Ok("".into())
     }
+}
+
+impl<DB> PartitionOrder<DB> for ()
+where
+    DB: Backend,
+{
+    fn encode<'a, 'b>(mut ast_pass: AstPass<'a, 'b, DB>)
+    where
+        DB::QueryBuilder: 'a,
+        <DB as HasBindCollector<'a>>::BindCollector: 'a,
+        DB::MetadataLookup: 'a,
+        'b: 'a,
+    {
+        ast_pass.push_sql(" 1 ");
+    }
+}
+
+#[allow(unused_parens)]
+impl<DB, T> PartitionOrder<DB> for Asc<T>
+where
+    DB: Backend,
+    T: Column,
+{
+    fn encode<'a, 'b>(mut ast_pass: AstPass<'a, 'b, DB>)
+    where
+        DB::QueryBuilder: 'a,
+        <DB as HasBindCollector<'a>>::BindCollector: 'a,
+        DB::MetadataLookup: 'a,
+        'b: 'a,
+    {
+        ast_pass.push_sql(&format!(
+            " {SUBQUERY_ALIAS}.{} asc ",
+            <T as Column>::NAME.split('.').last().unwrap()
+        ));
+    }
+}
+
+#[allow(unused_parens)]
+impl<DB, T> PartitionOrder<DB> for Desc<T>
+where
+    DB: Backend,
+    T: Column,
+{
+    fn encode<'a, 'b>(mut ast_pass: AstPass<'a, 'b, DB>)
+    where
+        DB::QueryBuilder: 'a,
+        <DB as HasBindCollector<'a>>::BindCollector: 'a,
+        DB::MetadataLookup: 'a,
+        'b: 'a,
+    {
+        ast_pass.push_sql(&format!(
+            " {SUBQUERY_ALIAS}.{} desc ",
+            <T as Column>::NAME.split('.').last().unwrap()
+        ));
+    }
+}
+
+#[macro_export]
+macro_rules! intersperse_statement {
+    ($separator:stmt; $stmt:stmt; $($stmts:stmt;)+) => {
+        $stmt
+        $separator
+        $crate::intersperse_statement!($separator; $($stmts;)*);
+    };
+    ($separator:stmt; $stmt:stmt;) => {
+        $stmt
+    };
 }
 
 macro_rules! partition {
@@ -240,11 +336,11 @@ macro_rules! partition {
             #[allow(unused_parens)]
             impl<$($gen),+> Partition for ($($gen,)+)
             where
-                $($gen: diesel::Column),+
+                $($gen: Column),+
             {
                 fn encode(&self) -> Result<String, diesel::result::Error> {
                     let unique_min_column_names = [$(
-                        format!("{SUBQUERY_ALIAS}.{}", <$gen as diesel::Column>::NAME.split(".").last().unwrap()),
+                        format!("{SUBQUERY_ALIAS}.{}", <$gen as Column>::NAME.split(".").last().unwrap()),
                     )+]
                         .into_iter()
                         .unique()
@@ -255,23 +351,44 @@ macro_rules! partition {
                     Ok(unique_min_column_names.join(", "))
                 }
             }
+
+            #[allow(unused_parens)]
+            impl<DB, $($gen),+> PartitionOrder<DB> for ($($gen,)+)
+            where
+                DB: Backend,
+                $($gen: PartitionOrder<DB>,)+
+            {
+                fn encode<'a, 'b>(mut ast_pass: AstPass<'a, 'b, DB>)
+                where
+                    DB::QueryBuilder: 'a,
+                    <DB as HasBindCollector<'a>>::BindCollector: 'a,
+                    DB::MetadataLookup: 'a,
+                    'b: 'a,
+                {
+                    $crate::intersperse_statement!(
+                        ast_pass.push_sql(", ");
+                        $(<$gen as PartitionOrder<DB>>::encode(ast_pass.reborrow());)+
+                    );
+                }
+            }
         )*
     };
 }
 
 impl<T: AsQuery> Paginate for T {}
 
-impl<T: Query, Q> Query for Paginated<T, Q> {
+impl<T: Query, Q, PO> Query for Paginated<T, Q, PO> {
     type SqlType = T::SqlType;
 }
 
-impl<C: Connection, T, Q> RunQueryDsl<C> for Paginated<T, Q> {}
+impl<C: Connection, T, Q, PO> RunQueryDsl<C> for Paginated<T, Q, PO> {}
 
-impl<DB, T, Q> QueryFragment<DB> for Paginated<T, Q>
+impl<DB, T, Q, PO> QueryFragment<DB> for Paginated<T, Q, PO>
 where
     DB: Backend,
     T: QueryFragment<DB>,
     Q: Partition,
+    PO: PartitionOrder<DB>,
     i64: ToSql<BigInt, DB>,
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
@@ -291,6 +408,10 @@ where
         if let Some(partition) = self.partition.as_ref() {
             pass.push_sql("partition by ");
             pass.push_sql(&partition.encode()?);
+            if self.partition_order.as_ref().is_some() {
+                pass.push_sql(" order by ");
+                PO::encode(pass.reborrow());
+            }
         }
         pass.push_sql(") as offset from ( ");
         self.query.walk_ast(pass.reborrow())?;

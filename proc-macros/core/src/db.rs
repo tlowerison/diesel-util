@@ -62,12 +62,7 @@ pub fn derive_db(item: TokenStream) -> Result<TokenStream, Error> {
 
     add_bounds_to_generics(
         &mut db_trait_generics,
-        [
-            parse_quote!(Clone),
-            parse_quote!(std::fmt::Debug),
-            parse_quote!(Send),
-            parse_quote!(Sync),
-        ],
+        [parse_quote!(Clone), parse_quote!(Send), parse_quote!(Sync)],
         None,
     );
 

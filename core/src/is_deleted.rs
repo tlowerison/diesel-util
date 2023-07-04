@@ -104,10 +104,15 @@ mod soft_delete {
         type IsNotDeletedFilter = IsNotDeletedFilter<'query, Q, S>;
     }
 
+    #[derive(Derivative)]
+    #[derivative(
+        Clone(bound = "Filter<Q, IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>: Clone"),
+        Debug(bound = "Filter<Q, IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>: Debug")
+    )]
     pub struct IsDeletedFilter<'query, Q, S>(
         Filter<Q, IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
-        PhantomData<S>,
-        PhantomData<&'query ()>,
+        #[derivative(Debug = "ignore")] PhantomData<S>,
+        #[derivative(Debug = "ignore")] PhantomData<&'query ()>,
     )
     where
         S: SoftDeletable,
@@ -115,10 +120,15 @@ mod soft_delete {
         Filter<Q, IsNotNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>: 'query,
         Self: 'query;
 
+    #[derive(Derivative)]
+    #[derivative(
+        Clone(bound = "Filter<Q, IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>: Clone"),
+        Debug(bound = "Filter<Q, IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>: Debug")
+    )]
     pub struct IsNotDeletedFilter<'query, Q, S>(
         Filter<Q, IsNull<<<S as SoftDeletable>::DeletedAt as SoftDeletableColumn>::Column>>,
-        PhantomData<S>,
-        PhantomData<&'query ()>,
+        #[derivative(Debug = "ignore")] PhantomData<S>,
+        #[derivative(Debug = "ignore")] PhantomData<&'query ()>,
     )
     where
         S: SoftDeletable,

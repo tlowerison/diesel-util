@@ -1,5 +1,13 @@
 #![allow(incomplete_features)]
-#![feature(associated_type_defaults, specialization, trait_alias)]
+#![feature(
+    associated_type_defaults,
+    return_position_impl_trait_in_trait,
+    specialization,
+    trait_alias
+)]
+
+#[cfg(all(feature = "async-graphql-4", feature = "async-graphql-5"))]
+compile_error!("Two versions of the subdependency `async-graphql` were enabled, please only enable one by only using one of the features: `async-graphql-4`, `async-graphql-5`.");
 
 #[macro_use]
 extern crate async_backtrace;
@@ -11,8 +19,6 @@ extern crate cfg_if;
 extern crate derivative;
 #[macro_use]
 extern crate derive_more;
-#[macro_use]
-pub extern crate lazy_static;
 #[macro_use]
 extern crate serde;
 #[macro_use]

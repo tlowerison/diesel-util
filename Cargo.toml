@@ -10,24 +10,30 @@ exclude = ["foo"]
 version = "0.1.0"
 edition = "2021"
 authors = ["Trey Lowerison"]
+rust-version = "1.70.0"
 
 [workspace.dependencies]
 anyhow = "1"
 async-backtrace = "^0.2"
+async-graphql-4 = { package = "async-graphql", version = "4", features = ["chrono"] }
+async-graphql-5 = { package = "async-graphql", version = "5", features = ["chrono"] }
 async-trait = "^0.1"
-chrono = "^0.4"
+cast_trait_object = "0.1"
 cfg-if = "1"
+chrono = { version = "^0.4", features = ["serde"] }
 convert_case = "^0.6"
 derivative = "2"
 derive_more.git = "https://github.com/tlowerison/derive_more"
-diesel = "2"
-diesel-async = "^0.2"
+diesel = { version = "2", features = ["chrono"] }
+diesel-async = "^0.3"
 diesel_migrations = "2"
+dyn-clone = "1.0"
 either = "1"
 futures = "^0.3"
 itertools = "^0.10"
 lazy_static = "1"
 mobc = "^0.7"
+once_cell = "1"
 paste = "1"
 proc-macro2 = "1"
 proc-macro-util = { git = "https://github.com/tlowerison/proc-macro-util", rev = "a06c7e4" }

@@ -3,6 +3,7 @@ name = "diesel-util-proc-macros"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 core = { path = "core", package = "diesel-util-proc-macros-core" }

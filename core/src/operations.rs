@@ -1,13 +1,15 @@
 use crate::*;
 use diesel::associations::HasTable;
+use diesel::deserialize::FromSqlRow;
 use diesel::dsl::SqlTypeOf;
-use diesel::expression::{AsExpression, Expression, ValidGrouping};
+use diesel::expression::{AsExpression, Expression, QueryMetadata, ValidGrouping};
 use diesel::expression_methods::ExpressionMethods;
 use diesel::helper_types as ht;
 use diesel::query_dsl::methods::{FilterDsl, FindDsl, SelectDsl};
 use diesel::query_source::QuerySource;
 use diesel::result::Error;
-use diesel::sql_types::SqlType;
+use diesel::serialize::ToSql;
+use diesel::sql_types::{BigInt, SqlType};
 use diesel::SelectableExpression;
 use diesel::{query_builder::*, Identifiable};
 use diesel::{Insertable, Table};
@@ -16,6 +18,7 @@ use either::Either;
 use futures::future::FutureExt;
 use scoped_futures::ScopedFutureExt;
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -229,16 +232,21 @@ pub trait DbGet: DbEntity {
         D: _Db,
 
         // Page bounds
-        P: Borrow<Page> + Debug + Send,
+        P: Borrow<Page<Self::Table>> + Debug + Send,
 
         // Query bounds
         ht::Select<Self::Table, Self::Selection>:
             IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw, IsNotDeletedFilter = F>,
-        F: Paginate + Send,
-        <F as AsQuery>::Query: 'query,
-        Paginated<<F as AsQuery>::Query>: Send,
 
-        Paginated<<F as AsQuery>::Query>: LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
+        F: Paginate<D::Backend, Self::Table> + Send,
+        for<'q> PaginatedQuery<
+            Self::Table,
+            <F::Output as Paginated<D::Backend>>::Q0<'q>,
+            <F::Output as Paginated<D::Backend>>::Q2<'q>,
+        >: LoadQuery<'query, D::AsyncConnection, (Self::Raw, Option<i64>, Option<String>)> + Send,
+        D::Backend: QueryMetadata<<F::Output as Query>::SqlType>,
+        (Self::Raw, Option<i64>, Option<String>): FromSqlRow<<F::Output as Query>::SqlType, D::Backend>,
+        i64: ToSql<BigInt, D::Backend>,
 
         Self::Selection: 'query,
     {
@@ -264,21 +272,28 @@ pub trait DbGet: DbEntity {
     async fn get_pages<'query, D, P, F>(
         db: &D,
         pages: impl IntoIterator<Item = P> + Send,
-    ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
+    ) -> Result<HashMap<Page<Self::Table>, Vec<Self>>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
 
         // Page bounds
-        P: Borrow<Page> + Debug + for<'a> PageRef<'a> + Send,
+        P: Borrow<Page<Self::Table>> + Debug + for<'a> PageRef<'a, Self::Table> + Send,
 
         // Query bounds
         ht::Select<Self::Table, Self::Selection>:
             IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw, IsNotDeletedFilter = F>,
-        F: Paginate + Send,
-        <F as AsQuery>::Query: 'query,
-        Paginated<<F as AsQuery>::Query>: Send,
+        <F as AsQuery>::Query: Clone + QueryFragment<D::Backend> + QueryId + Send + 'query,
 
-        Paginated<<F as AsQuery>::Query>: LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
+        Self::Raw: Clone,
+        F: Paginate<D::Backend, Self::Table> + Send,
+        for<'q> PaginatedQuery<
+            Self::Table,
+            <F::Output as Paginated<D::Backend>>::Q0<'q>,
+            <F::Output as Paginated<D::Backend>>::Q2<'q>,
+        >: LoadQuery<'query, D::AsyncConnection, (Self::Raw, Option<i64>, Option<String>)> + Send,
+        D::Backend: QueryMetadata<<F::Output as Query>::SqlType>,
+        (Self::Raw, Option<i64>, Option<String>): FromSqlRow<<F::Output as Query>::SqlType, D::Backend>,
+        i64: ToSql<BigInt, D::Backend>,
 
         Self::Selection: 'query,
     {
@@ -286,21 +301,28 @@ pub trait DbGet: DbEntity {
         tracing::Span::current().record("pages", &*format!("{pages:?}"));
 
         if pages.iter().all(|page| page.borrow().is_empty()) {
-            return Ok(vec![]);
+            return Ok(Default::default());
         }
 
-        let result: Result<Vec<Self::Raw>, _> = db.get_pages(pages, Self::selection()).await;
-        match result {
-            Ok(records) => Ok(records
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()
-                .map_err(DbEntityError::conversion)?),
+        let raw_records = match db.get_pages(pages, Self::selection()).await {
+            Ok(records) => records,
             Err(err) => {
                 error!(target: module_path!(), error = %err);
-                Err(err.into())
+                return Err(err.into());
             }
+        };
+        let mut records = HashMap::<Page<Self::Table>, Vec<Self>>::with_capacity(raw_records.len());
+        for (page, raw_records) in raw_records {
+            records.insert(
+                page,
+                raw_records
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(DbEntityError::conversion)?,
+            );
         }
+        Ok(records)
     }
 }
 

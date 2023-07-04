@@ -2,8 +2,9 @@ use crate::*;
 use async_backtrace::{backtrace, Location};
 use diesel::associations::HasTable;
 use diesel::backend::Backend;
+use diesel::deserialize::FromSqlRow;
 use diesel::dsl::SqlTypeOf;
-use diesel::expression::{AsExpression, Expression, ValidGrouping};
+use diesel::expression::{AsExpression, Expression, QueryMetadata, ValidGrouping};
 use diesel::expression_methods::ExpressionMethods;
 use diesel::helper_types as ht;
 use diesel::query_builder::*;
@@ -11,7 +12,8 @@ use diesel::query_dsl::methods::{FilterDsl, FindDsl};
 use diesel::query_dsl::select_dsl::SelectDsl;
 use diesel::query_source::QuerySource;
 use diesel::result::Error;
-use diesel::sql_types::SqlType;
+use diesel::serialize::ToSql;
+use diesel::sql_types::{BigInt, SqlType};
 use diesel::SelectableExpression;
 use diesel::{Identifiable, Insertable, Table};
 use diesel_async::{methods::*, AsyncConnection, RunQueryDsl};
@@ -201,9 +203,9 @@ macro_rules! instrument_err {
 }
 
 macro_rules! execute_query {
-    ($self:expr, $query:expr $(,)?) => {{
+    ($self:expr, $query:expr $(, $($result_ty_param:ty $(,)?)?)?) => {{
         let query = $query;
-        instrument_err!($self.query(move |connection| Box::pin(query.get_results(connection))))
+        instrument_err!($self.query(move |connection| Box::pin(query.get_results$($(::<$result_ty_param>)?)?(connection))))
     }};
 }
 
@@ -221,7 +223,7 @@ macro_rules! execute_query {
 /// actually executing any sql times (in terms of parsing through the compile errors).
 #[async_trait]
 pub trait _Db: Clone + Debug + Send + Sync + Sized {
-    type Backend: Backend;
+    type Backend: Backend + Send + 'static;
     type AsyncConnection: AsyncConnection<Backend = Self::Backend> + 'static;
     type Connection<'r>: Deref<Target = Self::AsyncConnection> + Send + Sync
     where
@@ -362,19 +364,25 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         selection: S,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
-        P: Borrow<Page> + Debug + Send,
+        P: Borrow<Page<R::Table>> + Debug + Send,
 
-        R: Send + HasTable,
+        R: Send + HasTable + 'static,
         <R as HasTable>::Table: Table + SelectDsl<S>,
 
         ht::Select<<R as HasTable>::Table, S>:
             IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
 
-        F: Paginate + Send,
-        <F as AsQuery>::Query: 'query,
-        Paginated<<F as AsQuery>::Query>: LoadQuery<'query, Self::AsyncConnection, R> + Send,
+        F: Paginate<Self::Backend, R::Table> + Send,
+        for<'q> PaginatedQuery<
+            R::Table,
+            <F::Output as Paginated<Self::Backend>>::Q0<'q>,
+            <F::Output as Paginated<Self::Backend>>::Q2<'q>,
+        >: LoadQuery<'query, Self::AsyncConnection, (R, Option<i64>, Option<String>)> + Send,
+        Self::Backend: QueryMetadata<<F::Output as Query>::SqlType>,
+        (R, Option<i64>, Option<String>): FromSqlRow<<F::Output as Query>::SqlType, Self::Backend>,
+        i64: ToSql<BigInt, Self::Backend>,
 
-        S: SelectableExpression<<R as HasTable>::Table> + Send + ValidGrouping<()> + 'query,
+        S: SelectableExpression<R::Table> + Send + ValidGrouping<()> + 'query,
 
         'life0: 'async_trait,
         'query: 'async_trait,
@@ -387,30 +395,43 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         if page.borrow().is_empty() {
             return Box::pin(ready(Ok(vec![])));
         }
-        execute_query!(self, R::table().select(selection).is_not_deleted().paginate(page)).boxed()
+        let page = page.borrow().clone();
+        execute_query!(
+            self,
+            R::table().select(selection).is_not_deleted().paginate(page),
+            (R, Option<i64>, Option<String>)
+        )
+        .map_ok(|results| results.into_iter().map(|(r, _, _)| r).collect())
+        .boxed()
     }
 
+    #[allow(clippy::type_complexity)]
     #[framed]
     #[instrument(skip_all)]
     fn get_pages<'life0, 'async_trait, 'query, R, P, I, F, S>(
         &'life0 self,
         pages: I,
         selection: S,
-    ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
+    ) -> BoxFuture<'async_trait, Result<HashMap<Page<R::Table>, Vec<R>>, Error>>
     where
-        P: Debug + for<'a> PageRef<'a> + Send,
+        P: Debug + for<'a> PageRef<'a, R::Table> + Send,
         I: Debug + IntoIterator<Item = P> + Send,
         <I as IntoIterator>::IntoIter: Send,
 
-        R: Send + HasTable,
+        R: Clone + Send + HasTable + 'static,
         <R as HasTable>::Table: Table + SelectDsl<S>,
 
-        ht::Select<<R as HasTable>::Table, S>:
-            IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
+        ht::Select<R::Table, S>: IsNotDeleted<'query, Self::AsyncConnection, R, R, IsNotDeletedFilter = F>,
 
-        F: Paginate + Send,
-        <F as AsQuery>::Query: 'query,
-        Paginated<<F as AsQuery>::Query>: LoadQuery<'query, Self::AsyncConnection, R> + Send,
+        F: Paginate<Self::Backend, R::Table> + Send,
+        for<'q> PaginatedQuery<
+            R::Table,
+            <F::Output as Paginated<Self::Backend>>::Q0<'q>,
+            <F::Output as Paginated<Self::Backend>>::Q2<'q>,
+        >: LoadQuery<'query, Self::AsyncConnection, (R, Option<i64>, Option<String>)> + Send,
+        Self::Backend: QueryMetadata<<F::Output as Query>::SqlType>,
+        (R, Option<i64>, Option<String>): FromSqlRow<<F::Output as Query>::SqlType, Self::Backend>,
+        i64: ToSql<BigInt, Self::Backend>,
 
         S: SelectableExpression<<R as HasTable>::Table> + Send + ValidGrouping<()> + 'query,
 
@@ -423,13 +444,84 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
+        let pages = pages.into_iter().map(|x| x.page_ref().clone()).collect::<Vec<_>>();
+
         execute_query!(
             self,
             R::table()
                 .select(selection)
                 .is_not_deleted()
-                .multipaginate(pages.into_iter()),
+                .multipaginate(pages.iter()),
+            (R, Option<i64>, Option<String>)
         )
+        .map_ok(move |results| {
+            use std::collections::BTreeMap;
+            use std::ops::Bound::*;
+            use std::str::FromStr;
+
+            let mut pages_by_cursor_id = HashMap::<Uuid, &Page<R::Table>>::default();
+            let mut pages_by_page_offset_range = BTreeMap::<Range, &Page<R::Table>>::default();
+            for page in &pages {
+                match page {
+                    Page::Cursor(page_cursor) => {
+                        pages_by_cursor_id.insert(page_cursor.id, page);
+                    }
+                    Page::Offset(page_offset) => {
+                        pages_by_page_offset_range.insert(page_offset.into(), page);
+                    }
+                }
+            }
+            let (range_min, range_max) = if !pages_by_page_offset_range.is_empty() {
+                (
+                    pages_by_page_offset_range.first_key_value().unwrap().0.left_exclusive,
+                    pages_by_page_offset_range.last_key_value().unwrap().0.right_inclusive,
+                )
+            } else {
+                (0, 0) // never used
+            };
+
+            let mut results_by_page = HashMap::<Page<R::Table>, Vec<R>>::default();
+            for (result, row_number, page_id) in results {
+                if let Some(page_id) = page_id {
+                    let page_id = Uuid::from_str(&page_id).unwrap();
+                    let page = pages_by_cursor_id.get(&page_id).unwrap();
+                    if !results_by_page.contains_key(page) {
+                        results_by_page.insert((*page).clone(), vec![]);
+                    }
+                    results_by_page.get_mut(page).unwrap().push(result);
+                } else if let Some(row_number) = row_number {
+                    let mut matches = pages_by_page_offset_range.range((
+                        Excluded(Range {
+                            left_exclusive: range_min,
+                            right_inclusive: row_number - 1,
+                            kind: RangeKind::LowerBound,
+                        }),
+                        Excluded(Range {
+                            left_exclusive: row_number,
+                            right_inclusive: range_max,
+                            kind: RangeKind::UpperBound,
+                        }),
+                    ));
+                    if let Some((_, first_match)) = matches.next() {
+                        let new_pages_and_results =
+                            matches.map(|(_, page)| (*page, result.clone())).collect::<Vec<_>>();
+
+                        if !results_by_page.contains_key(first_match) {
+                            results_by_page.insert((*first_match).clone(), vec![]);
+                        }
+                        results_by_page.get_mut(first_match).unwrap().push(result);
+
+                        for (page, result) in new_pages_and_results {
+                            if !results_by_page.contains_key(page) {
+                                results_by_page.insert((*page).clone(), vec![]);
+                            }
+                            results_by_page.get_mut(page).unwrap().push(result);
+                        }
+                    }
+                }
+            }
+            results_by_page
+        })
         .boxed()
     }
 
@@ -721,6 +813,7 @@ cfg_if! {
         impl<'d, C> _Db for DbConnOwned<'d, C>
         where
             C: AsyncConnection + PoolableConnection + Sync + 'static,
+            <C as AsyncConnection>::Backend: Send,
         {
             type Backend = <C as AsyncConnection>::Backend;
             type AsyncConnection = C;
@@ -831,6 +924,7 @@ cfg_if! {
         impl<'d, C> _Db for DbConnection<C, &'d mut C>
         where
             C: AsyncConnection + PoolableConnection + Sync + 'static,
+            <C as AsyncConnection>::Backend: Send,
         {
             type Backend = <C as AsyncConnection>::Backend;
             type AsyncConnection = C;
@@ -913,6 +1007,7 @@ cfg_if! {
         impl<C> _Db for crate::Pool<C>
         where
             C: AsyncPoolableConnection + Sync + 'static,
+            <C as AsyncConnection>::Backend: Send,
         {
             type Backend = <C as AsyncConnection>::Backend;
             type AsyncConnection = C;

@@ -3,20 +3,25 @@ name = "diesel-util-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
 async-backtrace.workspace = true
 async-trait.workspace = true
+cast_trait_object.workspace = true
 cfg-if.workspace = true
+chrono.workspace = true
 derivative.workspace = true
 derive_more.workspace = true
 diesel.workspace = true
 diesel-async.workspace = true
+dyn-clone.workspace = true
 either.workspace = true
 futures.workspace = true
 itertools.workspace = true
 lazy_static.workspace = true
+once_cell.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 scoped-futures.workspace = true
@@ -25,9 +30,13 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
-mobc = { version = "^0.7", optional = true }
+async-graphql-4 = { workspace = true, optional = true }
+async-graphql-5 = { workspace = true, optional = true }
+mobc = { workspace = true, optional = true }
 
 [features]
+async-graphql-4 = ["dep:async-graphql-4"]
+async-graphql-5 = ["dep:async-graphql-5"]
 bb8 = ["diesel-async/bb8"]
 deadpool = ["diesel-async/deadpool"]
 mobc = ["diesel-async/mobc", "dep:mobc"]

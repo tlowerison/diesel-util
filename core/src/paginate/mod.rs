@@ -33,6 +33,43 @@ pub enum Page {
     Offset(PageOffset),
 }
 
+impl Page {
+    pub fn on_column<QS, C>(self, column: C) -> DbPage<QS>
+    where
+        QS: ::diesel::query_source::QuerySource,
+        C: ::diesel::AppearsOnTable<QS>
+            + Clone
+            + ::diesel::Column<SqlType = ::diesel::sql_types::Timestamp>
+            + QF
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+        <C as ::diesel::expression::Expression>::SqlType: ::diesel::sql_types::SingleValue,
+    {
+        match self {
+            Self::Cursor(cursor) => DbPage::Cursor(cursor.on_column(column)),
+            Self::Offset(offset) => DbPage::Offset(offset.into()),
+        }
+    }
+
+    pub fn map_on_column<QS, C>(column: C) -> impl (Fn(Self) -> DbPage<QS>) + 'static
+    where
+        QS: ::diesel::query_source::QuerySource,
+        C: ::diesel::AppearsOnTable<QS>
+            + Clone
+            + ::diesel::Column<SqlType = ::diesel::sql_types::Timestamp>
+            + QF
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+        <C as ::diesel::expression::Expression>::SqlType: ::diesel::sql_types::SingleValue,
+    {
+        move |page| page.on_column(column.clone())
+    }
+}
+
 #[derive(AsVariant, AsVariantMut, Derivative, IsVariant, Unwrap)]
 #[derivative(
     Clone(bound = ""),

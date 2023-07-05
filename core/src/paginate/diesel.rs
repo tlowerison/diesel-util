@@ -22,6 +22,8 @@ static OFFSET_COLUMN_NAME: &str = "offset";
 static OFFSET_SUBQUERY1_ALIAS: &str = "q1";
 static OFFSET_SUBQUERY2_ALIAS: &str = "q2";
 
+pub type Paged<T> = (T, Option<i64>, Option<String>);
+
 #[derive(Debug, Clone)]
 pub struct PaginatedQuery<QS: ?Sized, Q0, Q2, P = (), PO = ()> {
     query: Q0,
@@ -41,13 +43,8 @@ pub struct PaginatedResult<T> {
     pub page_id: Option<Uuid>,
 }
 
-#[derive(Clone, Copy, Debug, Deref, DerefMut, From)]
-pub struct PaginatedQueryWrapper<T, DB>(
-    #[deref]
-    #[deref_mut]
-    pub T,
-    PhantomData<DB>,
-);
+#[derive(Clone, Copy, Debug, From)]
+pub struct PaginatedQueryWrapper<T, DB>(pub T, PhantomData<DB>);
 
 pub trait Paginate<DB: Backend, QS: ?Sized>: AsQuery + Clone + Send + Sized {
     type Output: Paginated<DB>;
@@ -733,9 +730,9 @@ where
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.unsafe_to_cache_prepared();
 
-        let query = self.get_query();
+        let query = self.0.get_query();
 
-        let pages = match self.get_pages() {
+        let pages = match self.0.get_pages() {
             Some(pages) => pages,
             None => return query.walk_ast(pass),
         };
@@ -754,7 +751,7 @@ where
         let has_offset_pages = !offset_indices.is_empty();
 
         if has_cursor_pages {
-            let cursor_queries = self.get_cursor_queries();
+            let cursor_queries = self.0.get_cursor_queries();
             let page_cursors: Vec<&DbPageCursor<P::QuerySource>> = cursor_indices
                 .into_iter()
                 .map(|i| pages[i].as_cursor().unwrap())
@@ -773,10 +770,10 @@ where
             for item in intersperse(page_cursors.into_iter().enumerate().map(Left), Right(())) {
                 match item {
                     Left((i, page_cursor)) => {
-                        if let Some(partition) = self.get_partition() {
+                        if let Some(partition) = self.0.get_partition() {
                             pass.push_sql("(select *, row_number() over (partition by ");
                             pass.push_sql(&partition.encode()?);
-                            if self.get_partition_order().is_some() {
+                            if self.0.get_partition_order().is_some() {
                                 pass.push_sql(" order by ");
                                 P::PO::encode(pass.reborrow());
                             }
@@ -795,7 +792,7 @@ where
                         pass.push_sql(&format!(" from query{i} as "));
                         pass.push_sql(SUBQUERY_NAME);
 
-                        match self.get_partition().is_some() {
+                        match self.0.get_partition().is_some() {
                             false => {
                                 pass.push_sql(" limit ");
                                 pass.push_bind_param::<BigInt, _>(&page_cursor.count)?;
@@ -831,10 +828,10 @@ where
             pass.push_sql("select *, null as ");
             pass.push_sql(PAGE_ID_COLUMN_NAME);
             pass.push_sql(" from (select *, row_number() over (");
-            if let Some(partition) = self.get_partition() {
+            if let Some(partition) = self.0.get_partition() {
                 pass.push_sql("partition by ");
                 pass.push_sql(&partition.encode()?);
-                if self.get_partition_order().is_some() {
+                if self.0.get_partition_order().is_some() {
                     pass.push_sql(" order by ");
                     P::PO::encode(pass.reborrow());
                 }
@@ -1004,6 +1001,8 @@ mod paginated_query_impls {
 
 mod paginated_query_wrapper_impls {
     use super::*;
+    use diesel::dsl::*;
+    use diesel::query_dsl::methods::*;
 
     // Query impl also produces auto-impl of AsQuery
     impl<DB: Backend, P: Paginated<DB>> Query for PaginatedQueryWrapper<P, DB> {
@@ -1019,4 +1018,47 @@ mod paginated_query_wrapper_impls {
     impl<C: Connection, P: Paginated<C::Backend>> RunQueryDsl<C> for PaginatedQueryWrapper<P, C::Backend> {}
 
     impl<DB: Backend, P: Paginated<DB>> QueryDsl for PaginatedQueryWrapper<P, DB> {}
+
+    impl<'a, DB: Backend, P: Paginated<DB>> BoxedDsl<'a, DB> for PaginatedQueryWrapper<P, DB>
+    where
+        P: BoxedDsl<'a, DB>,
+    {
+        type Output = IntoBoxed<'a, P, DB>;
+        fn internal_into_boxed(self) -> IntoBoxed<'a, Self, DB> {
+            self.0.internal_into_boxed()
+        }
+    }
+
+    macro_rules! paginated_query_wrapper_query_dsl_method {
+        ($trait:ident$(<$($gen:ident $(: $bound:tt $(+ $bound2:tt)?)?),+>)? { fn $fn_name:ident(self $(, $param:ident: $param_ty:ty)*) -> $output_ty:ident<Self $(, $output_gen:ident)*>; }) => {
+            impl<DB: Backend, P: $trait$(<$($gen),+>)? $($(, $gen $(: $bound $(+ $bound2)?)?)+)?> $trait$(<$($gen),+>)? for PaginatedQueryWrapper<P, DB> {
+                type Output = PaginatedQueryWrapper<$output_ty<P $(, $output_gen)*>, DB>;
+                fn $fn_name(self $(, $param: $param_ty)*) -> $output_ty<Self $(, $output_gen)*> {
+                    PaginatedQueryWrapper(self.0.$fn_name($($param),*), self.1)
+                }
+            }
+        };
+        ($trait:ident$(<$($gen:ident $(: $bound:tt $(+ $bound2:tt)?)?),+>)? { fn $fn_name:ident(self $(, $param:ident: $param_ty:ty)*) -> Self::Output; }) => {
+            impl<DB: Backend, P: $trait$(<$($gen),+>)? $($(, $gen $(: $bound $(+ $bound2)?)?)+)?> $trait$(<$($gen),+>)? for PaginatedQueryWrapper<P, DB> {
+                type Output = PaginatedQueryWrapper<<P as $trait$(<$($gen),+>)?>::Output, DB>;
+                fn $fn_name(self $(, $param: $param_ty)*) -> Self::Output {
+                    PaginatedQueryWrapper(self.0.$fn_name($($param),*), self.1)
+                }
+            }
+        };
+    }
+
+    paginated_query_wrapper_query_dsl_method!(DistinctDsl { fn distinct(self) -> Distinct<Self>; });
+    #[cfg(feature = "postgres")]
+    paginated_query_wrapper_query_dsl_method!(DistinctOnDsl<Selection: Clone> { fn distinct_on(self, selection: Selection) -> DistinctOn<Self, Selection>; });
+    paginated_query_wrapper_query_dsl_method!(SelectDsl<Selection: Clone + Expression> { fn select(self, selection: Selection) -> Self::Output; });
+    paginated_query_wrapper_query_dsl_method!(FilterDsl<Predicate: Clone> { fn filter(self, predicate: Predicate) -> Self::Output; });
+    paginated_query_wrapper_query_dsl_method!(OrFilterDsl<Predicate: Clone> { fn or_filter(self, predicate: Predicate) -> Self::Output; });
+    paginated_query_wrapper_query_dsl_method!(FindDsl<PK: Clone> { fn find(self, id: PK) -> Self::Output; });
+    paginated_query_wrapper_query_dsl_method!(GroupByDsl<Expr: Clone + Expression> { fn group_by(self, expr: Expr) -> GroupBy<Self, Expr>; });
+    paginated_query_wrapper_query_dsl_method!(HavingDsl<Predicate: Clone> { fn having(self, predicate: Predicate) -> Having<Self, Predicate>; });
+    paginated_query_wrapper_query_dsl_method!(LockingDsl<Lock: Clone> { fn with_lock(self, lock: Lock) -> Self::Output; });
+    paginated_query_wrapper_query_dsl_method!(ModifyLockDsl<Modifier: Clone> { fn modify_lock(self, modifier: Modifier) -> Self::Output; });
+    paginated_query_wrapper_query_dsl_method!(SingleValueDsl { fn single_value(self) -> Self::Output; });
+    paginated_query_wrapper_query_dsl_method!(SelectNullableDsl { fn nullable(self) -> Self::Output; });
 }

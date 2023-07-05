@@ -13,6 +13,7 @@ struct DbFilterParams {
     table_name: syn::Ident,
     db: syn::Ident,
     optional_params: DbFilterOptionalParams,
+    #[allow(dead_code)]
     query_source: syn::Type,
     is_static: bool,
 }
@@ -804,12 +805,6 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
             #select_clause
     };
 
-    let base_query = if is_static {
-        base_query
-    } else {
-        quote! { #base_query .into_boxed() }
-    };
-
     let needs_group_by_clause =
         inner_join.as_ref().map(|x| x.0.len()).unwrap_or(0) + left_join.as_ref().map(|x| x.0.len()).unwrap_or(0) > 0;
 
@@ -913,7 +908,7 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
                     let db = #db;
                     #filter_operand_statements
 
-                    if let Some(pages) = diesel_util::OptDbPageRef::opt_page_refs(&#pages) {
+                    if let Some(pages) = ::diesel_util::OptDbPageRef::opt_page_refs(&#pages) {
                         #query_multipaginated
                     } else {
                         #query_non_paginated
@@ -929,7 +924,7 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
                         let db = #db;
                         #filter_operand_statements
 
-                        if let Some(page) = diesel_util::OptDbPageRef::opt_page_ref(&#page) {
+                        if let Some(page) = ::diesel_util::OptDbPageRef::opt_page_ref(&#page) {
                             #query_paginated
                         } else {
                             #query_non_paginated
@@ -965,15 +960,25 @@ fn get_dynamic_query(
     order_by_clauses: &TokenStream,
     partition_clause: &TokenStream,
 ) -> NestedQuery {
-    let mut tokens = quote! {
-        let mut query = #base_query;
+    let mut multipaginated = quote! {
+        let mut query = #base_query
+            .multipaginate(pages.iter())
+            #partition_clause
+            .into_boxed();
+    };
+    let mut non_paginated = quote! { let mut query = #base_query.into_boxed(); };
+    let mut paginated = quote! {
+        let mut query = #base_query
+        .paginate(page)
+        #partition_clause
+        .into_boxed();
     };
 
     for filter in filters {
         let Filter {
             operand_ident, clause, ..
         } = &filter;
-        tokens = match operand_ident {
+        let append_tokens = |tokens| match operand_ident {
             Some(operand_ident) => quote! {
                 #tokens
                 if let Some(#operand_ident) = #operand_ident.as_ref() {
@@ -985,37 +990,36 @@ fn get_dynamic_query(
                 query = query #clause;
             },
         };
+        multipaginated = append_tokens(multipaginated);
+        non_paginated = append_tokens(non_paginated);
+        paginated = append_tokens(paginated);
     }
 
     NestedQuery {
         multipaginated: quote! {
-            #tokens
-            let result = diesel_util::_Db::query(&db, move |conn| Box::pin(query
+            #multipaginated
+            let result = ::diesel_util::_Db::query(&db, move |conn| Box::pin(query
                 #group_by_clause
                 #order_by_clauses
-                .multipaginate(pages.iter())
-                #partition_clause
-                .get_results::<(#deserialize_ty, Option<i64>, Option<String>)>(conn)
+                .get_results::<::diesel_util::Paged<#deserialize_ty>>(conn)
             ))
             .await;
             result.map(move |results| split_multipaginated_results(results, pages))
         },
         non_paginated: quote! {
-            #tokens
-            diesel_util::_Db::query(&db, move |conn| Box::pin(query
+            #non_paginated
+            ::diesel_util::_Db::query(&db, move |conn| Box::pin(query
                 #group_by_clause
                 #order_by_clauses
                 .get_results::<#deserialize_ty>(conn)
             )).await
         },
         paginated: quote! {
-            #tokens
-            diesel_util::_Db::query(&db, move |conn| Box::pin(query
+            #paginated
+            ::diesel_util::_Db::query(&db, move |conn| Box::pin(query
                 #group_by_clause
                 #order_by_clauses
-                .paginate(page)
-                #partition_clause
-                .get_results::<(#deserialize_ty, Option<i64>, Option<String>)>(conn)
+                .get_results::<::diesel_util::Paged<#deserialize_ty>>(conn)
             ))
             .await
             .map(|results| results.into_iter().map(|(result, _, _)| result).collect::<Vec<_>>())
@@ -1052,7 +1056,7 @@ fn get_static_query(
             .collect();
         return NestedQuery {
             multipaginated: quote! {
-                let result = diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
+                let result = ::diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
                     #(#filter_clauses)*
                     #group_by_clause
                     #order_by_clauses
@@ -1064,7 +1068,7 @@ fn get_static_query(
                 result.map(move |results| split_multipaginated_results(results, pages))
             },
             non_paginated: quote! {
-                diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
+                ::diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
                     #(#filter_clauses)*
                     #group_by_clause
                     #order_by_clauses
@@ -1073,7 +1077,7 @@ fn get_static_query(
                 )).await
             },
             paginated: quote! {
-                diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
+                ::diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
                     #(#filter_clauses)*
                     #group_by_clause
                     #order_by_clauses

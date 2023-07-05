@@ -377,9 +377,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             R::Table,
             <F::Output as Paginated<Self::Backend>>::Q0<'q>,
             <F::Output as Paginated<Self::Backend>>::Q2<'q>,
-        >: LoadQuery<'query, Self::AsyncConnection, (R, Option<i64>, Option<String>)> + Send,
+        >: LoadQuery<'query, Self::AsyncConnection, Paged<R>> + Send,
         Self::Backend: QueryMetadata<<F::Output as Query>::SqlType>,
-        (R, Option<i64>, Option<String>): FromSqlRow<<F::Output as Query>::SqlType, Self::Backend>,
+        Paged<R>: FromSqlRow<<F::Output as Query>::SqlType, Self::Backend>,
         i64: ToSql<BigInt, Self::Backend>,
 
         S: SelectableExpression<R::Table> + Send + ValidGrouping<()> + 'query,
@@ -399,7 +399,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         execute_query!(
             self,
             R::table().select(selection).is_not_deleted().paginate(page),
-            (R, Option<i64>, Option<String>)
+            Paged<R>
         )
         .map_ok(|results| results.into_iter().map(|(r, _, _)| r).collect())
         .boxed()
@@ -428,9 +428,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             R::Table,
             <F::Output as Paginated<Self::Backend>>::Q0<'q>,
             <F::Output as Paginated<Self::Backend>>::Q2<'q>,
-        >: LoadQuery<'query, Self::AsyncConnection, (R, Option<i64>, Option<String>)> + Send,
+        >: LoadQuery<'query, Self::AsyncConnection, Paged<R>> + Send,
         Self::Backend: QueryMetadata<<F::Output as Query>::SqlType>,
-        (R, Option<i64>, Option<String>): FromSqlRow<<F::Output as Query>::SqlType, Self::Backend>,
+        Paged<R>: FromSqlRow<<F::Output as Query>::SqlType, Self::Backend>,
         i64: ToSql<BigInt, Self::Backend>,
 
         S: SelectableExpression<<R as HasTable>::Table> + Send + ValidGrouping<()> + 'query,
@@ -452,7 +452,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                 .select(selection)
                 .is_not_deleted()
                 .multipaginate(pages.iter()),
-            (R, Option<i64>, Option<String>)
+            Paged<R>
         )
         .map_ok(move |results| split_multipaginated_results(results, pages))
         .boxed()

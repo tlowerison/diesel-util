@@ -243,9 +243,9 @@ pub trait DbGet: DbEntity {
             Self::Table,
             <F::Output as Paginated<D::Backend>>::Q0<'q>,
             <F::Output as Paginated<D::Backend>>::Q2<'q>,
-        >: LoadQuery<'query, D::AsyncConnection, (Self::Raw, Option<i64>, Option<String>)> + Send,
+        >: LoadQuery<'query, D::AsyncConnection, Paged<Self::Raw>> + Send,
         D::Backend: QueryMetadata<<F::Output as Query>::SqlType>,
-        (Self::Raw, Option<i64>, Option<String>): FromSqlRow<<F::Output as Query>::SqlType, D::Backend>,
+        Paged<Self::Raw>: FromSqlRow<<F::Output as Query>::SqlType, D::Backend>,
         i64: ToSql<BigInt, D::Backend>,
 
         Self::Selection: 'query,
@@ -290,9 +290,9 @@ pub trait DbGet: DbEntity {
             Self::Table,
             <F::Output as Paginated<D::Backend>>::Q0<'q>,
             <F::Output as Paginated<D::Backend>>::Q2<'q>,
-        >: LoadQuery<'query, D::AsyncConnection, (Self::Raw, Option<i64>, Option<String>)> + Send,
+        >: LoadQuery<'query, D::AsyncConnection, Paged<Self::Raw>> + Send,
         D::Backend: QueryMetadata<<F::Output as Query>::SqlType>,
-        (Self::Raw, Option<i64>, Option<String>): FromSqlRow<<F::Output as Query>::SqlType, D::Backend>,
+        Paged<Self::Raw>: FromSqlRow<<F::Output as Query>::SqlType, D::Backend>,
         i64: ToSql<BigInt, D::Backend>,
 
         Self::Selection: 'query,

@@ -121,9 +121,10 @@ impl<
 }
 
 impl PageCursor {
-    pub fn on_column<C>(self, column: C) -> Result<DbPageCursor<C::Table>, anyhow::Error>
+    pub fn on_column<QS, C>(self, column: C) -> DbPageCursor<QS>
     where
-        C: AppearsOnTable<C::Table>
+        QS: diesel::query_source::QuerySource,
+        C: AppearsOnTable<QS>
             + Clone
             + Column<SqlType = Timestamp>
             + QF
@@ -134,7 +135,7 @@ impl PageCursor {
         <C as Expression>::SqlType: SingleValue,
     {
         let is_comparator_inclusive = self.is_comparator_inclusive.unwrap_or_default();
-        Ok(DbPageCursor {
+        DbPageCursor {
             count: self.count as i64,
             id: Uuid::new_v4(),
             column_name: C::NAME,
@@ -151,11 +152,11 @@ impl PageCursor {
             direction: self.direction,
             cursor: self.cursor,
             is_comparator_inclusive,
-        })
+        }
     }
 }
 
-impl<C> TryFrom<(PageCursor, C)> for DbPageCursor<C::Table>
+impl<C> From<(PageCursor, C)> for DbPageCursor<C::Table>
 where
     C: AppearsOnTable<C::Table>
         + Clone
@@ -167,8 +168,7 @@ where
         + 'static,
     <C as Expression>::SqlType: SingleValue,
 {
-    type Error = anyhow::Error;
-    fn try_from((value, column): (PageCursor, C)) -> Result<Self, Self::Error> {
+    fn from((value, column): (PageCursor, C)) -> Self {
         PageCursor::on_column(value, column)
     }
 }

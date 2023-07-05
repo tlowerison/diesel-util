@@ -36,6 +36,15 @@ pub enum Page {
     Offset(PageOffset),
 }
 
+impl Page {
+    pub fn count(&self) -> u32 {
+        match self {
+            Self::Cursor(cursor) => cursor.count,
+            Self::Offset(offset) => offset.count,
+        }
+    }
+}
+
 #[derive(AsVariant, AsVariantMut, Derivative, IsVariant, Unwrap)]
 #[derivative(
     Clone(bound = ""),

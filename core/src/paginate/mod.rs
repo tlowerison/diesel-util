@@ -24,7 +24,9 @@ use async_graphql_4 as async_graphql;
 #[cfg(feature = "async-graphql-5")]
 use async_graphql_5 as async_graphql;
 
-#[derive(AsVariant, AsVariantMut, Clone, Copy, Debug, Deserialize, Eq, Hash, IsVariant, PartialEq, Serialize)]
+#[derive(
+    AsVariant, AsVariantMut, Clone, Copy, Debug, Deserialize, Eq, Hash, IsVariant, Ord, PartialEq, PartialOrd, Serialize,
+)]
 #[cfg_attr(
     any(feature = "async-graphql-4", feature = "async-graphql-5"),
     derive(async_graphql::OneofObject)

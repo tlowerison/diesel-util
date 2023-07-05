@@ -33,6 +33,22 @@ impl PageOffset {
     }
 }
 
+impl Ord for PageOffset {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+impl PartialOrd for PageOffset {
+    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+        if self.index != rhs.index {
+            self.index.partial_cmp(&rhs.index)
+        } else {
+            self.count.partial_cmp(&rhs.count)
+        }
+    }
+}
+
 impl DbPageOffset {
     pub fn with_count(count: u32) -> Self {
         Self {

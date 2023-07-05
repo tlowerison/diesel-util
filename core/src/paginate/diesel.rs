@@ -1,6 +1,6 @@
-use crate::paginate::{AsPage, Page, PageExt, PageRef};
-use crate::paginate::{PageCursor, PageOffset};
-use crate::{ColumnCursorComparisonExpression, ColumnOrderByExpression, PageSplit};
+use crate::paginate::{AsDbPage, DbPage, DbPageExt, DbPageRef};
+use crate::paginate::{DbPageCursor, DbPageOffset};
+use crate::{ColumnCursorComparisonExpression, ColumnOrderByExpression, DbPageSplit};
 use diesel::backend::Backend;
 use diesel::helper_types::{Asc, Desc};
 use diesel::query_builder::*;
@@ -26,10 +26,10 @@ static OFFSET_SUBQUERY2_ALIAS: &str = "q2";
 pub struct PaginatedQuery<QS: ?Sized, Q0, Q2, P = (), PO = ()> {
     query: Q0,
     cursor_queries: Vec<Q2>,
-    /// must include PageOffset so that its `left` and `right` fields
+    /// must include DbPageOffset so that its `left` and `right` fields
     /// can be referenced in `QueryFragment::walk_ast` (the values
     /// cannot be created within the scope of the method)
-    pages: Option<Vec<Page<QS>>>,
+    pages: Option<Vec<DbPage<QS>>>,
     partition: Option<P>,
     partition_order: Option<PO>,
 }
@@ -52,11 +52,11 @@ pub struct PaginatedQueryWrapper<T, DB>(
 pub trait Paginate<DB: Backend, QS: ?Sized>: AsQuery + Clone + Send + Sized {
     type Output: Paginated<DB>;
 
-    fn paginate<P: AsPage<QS>>(self, page: P) -> PaginatedQueryWrapper<Self::Output, DB>;
+    fn paginate<P: AsDbPage<QS>>(self, page: P) -> PaginatedQueryWrapper<Self::Output, DB>;
 
     fn multipaginate<P, I>(self, pages: I) -> PaginatedQueryWrapper<Self::Output, DB>
     where
-        P: for<'a> PageRef<'a, QS>,
+        P: for<'a> DbPageRef<'a, QS>,
         I: Iterator<Item = P>;
 }
 
@@ -78,16 +78,16 @@ where
 
     fn paginate<P>(self, page: P) -> PaginatedQueryWrapper<Self::Output, DB>
     where
-        P: AsPage<QS>,
+        P: AsDbPage<QS>,
     {
         let query = self.as_query();
         let pages = page.as_page().map(|page| vec![page.clone()]);
 
         let mut cursor_queries = Vec::<Q2>::default();
         if let Some(pages) = pages.as_ref() {
-            let PageSplit { cursor_indices, .. } = Page::split(pages);
+            let DbPageSplit { cursor_indices, .. } = DbPage::split(pages);
 
-            let page_cursors: Vec<&PageCursor<QS>> = cursor_indices
+            let page_cursors: Vec<&DbPageCursor<QS>> = cursor_indices
                 .into_iter()
                 .map(|i| pages[i].as_cursor().unwrap())
                 .collect_vec();
@@ -114,19 +114,19 @@ where
 
     fn multipaginate<P, I>(self, pages: I) -> PaginatedQueryWrapper<Self::Output, DB>
     where
-        P: for<'a> PageRef<'a, QS>,
+        P: for<'a> DbPageRef<'a, QS>,
         I: Iterator<Item = P>,
     {
         let query = self.as_query();
 
-        let pages = Page::merge(pages.map(|page| page.page_ref().clone()))
+        let pages = DbPage::merge(pages.map(|page| page.page_ref().clone()))
             .into_iter()
             .map(Into::into)
             .collect_vec();
 
-        let PageSplit { cursor_indices, .. } = Page::split(&pages);
+        let DbPageSplit { cursor_indices, .. } = DbPage::split(&pages);
 
-        let page_cursors: Vec<&PageCursor<QS>> = cursor_indices
+        let page_cursors: Vec<&DbPageCursor<QS>> = cursor_indices
             .into_iter()
             .map(|i| pages[i].as_cursor().unwrap())
             .collect_vec();
@@ -216,7 +216,7 @@ pub trait Paginated<DB: Backend>:
     fn get_cursor_queries(&self) -> &[Self::Q2<'_>];
     fn get_partition(&self) -> Option<&Self::P>;
     fn get_partition_order(&self) -> Option<&Self::PO>;
-    fn get_pages(&self) -> Option<&[Page<Self::QuerySource>]>;
+    fn get_pages(&self) -> Option<&[DbPage<Self::QuerySource>]>;
 
     fn map_query<'q, F0, F2, NewQ0, NewQ1, NewQ2>(
         self,
@@ -315,7 +315,7 @@ where
     fn get_partition_order(&self) -> Option<&Self::PO> {
         self.partition_order.as_ref()
     }
-    fn get_pages(&self) -> Option<&[Page<Self::QuerySource>]> {
+    fn get_pages(&self) -> Option<&[DbPage<Self::QuerySource>]> {
         self.pages.as_deref()
     }
 
@@ -397,7 +397,7 @@ impl<DB: Backend + Send, P: Paginated<DB>> Paginated<DB> for PaginatedQueryWrapp
     fn get_partition_order(&self) -> Option<&Self::PO> {
         self.0.get_partition_order()
     }
-    fn get_pages(&self) -> Option<&[Page<Self::QuerySource>]> {
+    fn get_pages(&self) -> Option<&[DbPage<Self::QuerySource>]> {
         self.0.get_pages()
     }
 
@@ -594,17 +594,17 @@ where
             ));
         }
 
-        let PageSplit {
+        let DbPageSplit {
             cursor_indices,
             offset_indices,
-        } = Page::split(pages);
+        } = DbPage::split(pages);
 
         let has_cursor_pages = !cursor_indices.is_empty();
         let has_offset_pages = !offset_indices.is_empty();
 
         if has_cursor_pages {
             let cursor_queries = &self.cursor_queries;
-            let page_cursors: Vec<&PageCursor<QS>> = cursor_indices
+            let page_cursors: Vec<&DbPageCursor<QS>> = cursor_indices
                 .into_iter()
                 .map(|i| pages[i].as_cursor().unwrap())
                 .collect_vec();
@@ -672,7 +672,7 @@ where
         }
 
         if has_offset_pages {
-            let page_offsets: Vec<&PageOffset> = offset_indices
+            let page_offsets: Vec<&DbPageOffset> = offset_indices
                 .into_iter()
                 .map(|i| pages[i].as_offset().unwrap())
                 .collect_vec();
@@ -745,17 +745,17 @@ where
             ));
         }
 
-        let PageSplit {
+        let DbPageSplit {
             cursor_indices,
             offset_indices,
-        } = Page::split(pages);
+        } = DbPage::split(pages);
 
         let has_cursor_pages = !cursor_indices.is_empty();
         let has_offset_pages = !offset_indices.is_empty();
 
         if has_cursor_pages {
             let cursor_queries = self.get_cursor_queries();
-            let page_cursors: Vec<&PageCursor<P::QuerySource>> = cursor_indices
+            let page_cursors: Vec<&DbPageCursor<P::QuerySource>> = cursor_indices
                 .into_iter()
                 .map(|i| pages[i].as_cursor().unwrap())
                 .collect_vec();
@@ -823,7 +823,7 @@ where
         }
 
         if has_offset_pages {
-            let page_offsets: Vec<&PageOffset> = offset_indices
+            let page_offsets: Vec<&DbPageOffset> = offset_indices
                 .into_iter()
                 .map(|i| pages[i].as_offset().unwrap())
                 .collect_vec();
@@ -905,13 +905,13 @@ partition!(
 );
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Paged<K, QS> {
-    pub page: Page<QS>,
+pub struct DbPaged<K, QS> {
+    pub page: DbPage<QS>,
     pub key: K,
 }
 
-impl<K, QS> AsRef<Page<QS>> for Paged<K, QS> {
-    fn as_ref(&self) -> &Page<QS> {
+impl<K, QS> AsRef<DbPage<QS>> for DbPaged<K, QS> {
+    fn as_ref(&self) -> &DbPage<QS> {
         &self.page
     }
 }

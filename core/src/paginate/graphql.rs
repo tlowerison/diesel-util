@@ -14,7 +14,7 @@ cfg_if! {
                     None => Ok(()),
                     Some(max) => match value <= max {
                         true => Ok(()),
-                        false => Err(format!("Page count is too large, must be less than or equal to {max}")),
+                        false => Err(format!("DbPage count is too large, must be less than or equal to {max}")),
                     },
                 }
             }

@@ -231,8 +231,8 @@ pub trait DbGet: DbEntity {
     where
         D: _Db,
 
-        // Page bounds
-        P: Borrow<Page<Self::Table>> + Debug + Send,
+        // DbPage bounds
+        P: Borrow<DbPage<Self::Table>> + Debug + Send,
 
         // Query bounds
         ht::Select<Self::Table, Self::Selection>:
@@ -272,12 +272,12 @@ pub trait DbGet: DbEntity {
     async fn get_pages<'query, D, P, F>(
         db: &D,
         pages: impl IntoIterator<Item = P> + Send,
-    ) -> Result<HashMap<Page<Self::Table>, Vec<Self>>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
+    ) -> Result<HashMap<DbPage<Self::Table>, Vec<Self>>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
 
-        // Page bounds
-        P: Borrow<Page<Self::Table>> + Debug + for<'a> PageRef<'a, Self::Table> + Send,
+        // DbPage bounds
+        P: Borrow<DbPage<Self::Table>> + Debug + for<'a> DbPageRef<'a, Self::Table> + Send,
 
         // Query bounds
         ht::Select<Self::Table, Self::Selection>:
@@ -311,7 +311,7 @@ pub trait DbGet: DbEntity {
                 return Err(err.into());
             }
         };
-        let mut records = HashMap::<Page<Self::Table>, Vec<Self>>::with_capacity(raw_records.len());
+        let mut records = HashMap::<DbPage<Self::Table>, Vec<Self>>::with_capacity(raw_records.len());
         for (page, raw_records) in raw_records {
             records.insert(
                 page,

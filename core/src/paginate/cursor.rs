@@ -1,4 +1,4 @@
-use crate::paginate::PageExt;
+use crate::paginate::DbPageExt;
 use chrono::NaiveDateTime;
 use diesel::expression::expression_types::NotSelectable;
 use diesel::expression::is_aggregate::No;
@@ -20,7 +20,7 @@ use async_graphql_5 as async_graphql;
     any(feature = "async-graphql-4", feature = "async-graphql-5"),
     derive(async_graphql::InputObject)
 )]
-pub struct ApiPageCursor {
+pub struct PageCursor {
     #[cfg_attr(
         any(feature = "async-graphql-4", feature = "async-graphql-5"),
         graphql(validator(custom = "crate::paginate::GraphqlPaginationCountValidator"))
@@ -44,7 +44,7 @@ pub enum CursorDirection {
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""), Eq(bound = ""), Hash(bound = ""), PartialEq(bound = ""))]
-pub struct PageCursor<QS: ?Sized> {
+pub struct DbPageCursor<QS: ?Sized> {
     pub count: i64,
     pub cursor: NaiveDateTime,
     #[derivative(Hash = "ignore")]
@@ -63,11 +63,11 @@ pub struct PageCursor<QS: ?Sized> {
     pub(crate) column_order_by_expression: Box<dyn ColumnOrderByExpression<QS>>,
 }
 
-pub trait PageFrom<T> {
+pub trait DbPageFrom<T> {
     fn page_from(value: T) -> Self;
 }
 
-impl<QS: ?Sized> Clone for PageCursor<QS> {
+impl<QS: ?Sized> Clone for DbPageCursor<QS> {
     fn clone(&self) -> Self {
         Self {
             count: self.count,
@@ -120,8 +120,8 @@ impl<
 {
 }
 
-impl ApiPageCursor {
-    pub fn on_column<C>(self, column: C) -> Result<PageCursor<C::Table>, anyhow::Error>
+impl PageCursor {
+    pub fn on_column<C>(self, column: C) -> Result<DbPageCursor<C::Table>, anyhow::Error>
     where
         C: AppearsOnTable<C::Table>
             + Clone
@@ -134,7 +134,7 @@ impl ApiPageCursor {
         <C as Expression>::SqlType: SingleValue,
     {
         let is_comparator_inclusive = self.is_comparator_inclusive.unwrap_or_default();
-        Ok(PageCursor {
+        Ok(DbPageCursor {
             count: self.count as i64,
             id: Uuid::new_v4(),
             column_name: C::NAME,
@@ -155,7 +155,7 @@ impl ApiPageCursor {
     }
 }
 
-impl<C> TryFrom<(ApiPageCursor, C)> for PageCursor<C::Table>
+impl<C> TryFrom<(PageCursor, C)> for DbPageCursor<C::Table>
 where
     C: AppearsOnTable<C::Table>
         + Clone
@@ -168,18 +168,18 @@ where
     <C as Expression>::SqlType: SingleValue,
 {
     type Error = anyhow::Error;
-    fn try_from((value, column): (ApiPageCursor, C)) -> Result<Self, Self::Error> {
-        ApiPageCursor::on_column(value, column)
+    fn try_from((value, column): (PageCursor, C)) -> Result<Self, Self::Error> {
+        PageCursor::on_column(value, column)
     }
 }
 
-impl<QS: ?Sized> PageCursor<QS> {
+impl<QS: ?Sized> DbPageCursor<QS> {
     pub fn column_name(&self) -> &str {
         self.column_name
     }
 }
 
-impl<QS: ?Sized> PartialOrd for PageCursor<QS> {
+impl<QS: ?Sized> PartialOrd for DbPageCursor<QS> {
     fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
         if self.cursor != rhs.cursor {
             self.cursor.partial_cmp(&rhs.cursor)
@@ -189,13 +189,13 @@ impl<QS: ?Sized> PartialOrd for PageCursor<QS> {
     }
 }
 
-impl<QS: ?Sized> Ord for PageCursor<QS> {
+impl<QS: ?Sized> Ord for DbPageCursor<QS> {
     fn cmp(&self, rhs: &Self) -> Ordering {
         self.partial_cmp(rhs).unwrap()
     }
 }
 
-impl<QS: ?Sized> PageExt for PageCursor<QS> {
+impl<QS: ?Sized> DbPageExt for DbPageCursor<QS> {
     fn is_empty(&self) -> bool {
         self.count == 0
     }

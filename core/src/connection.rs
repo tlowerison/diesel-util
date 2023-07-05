@@ -364,7 +364,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         selection: S,
     ) -> BoxFuture<'async_trait, Result<Vec<R>, Error>>
     where
-        P: Borrow<Page<R::Table>> + Debug + Send,
+        P: Borrow<DbPage<R::Table>> + Debug + Send,
 
         R: Send + HasTable + 'static,
         <R as HasTable>::Table: Table + SelectDsl<S>,
@@ -412,9 +412,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         &'life0 self,
         pages: I,
         selection: S,
-    ) -> BoxFuture<'async_trait, Result<HashMap<Page<R::Table>, Vec<R>>, Error>>
+    ) -> BoxFuture<'async_trait, Result<HashMap<DbPage<R::Table>, Vec<R>>, Error>>
     where
-        P: Debug + for<'a> PageRef<'a, R::Table> + Send,
+        P: Debug + for<'a> DbPageRef<'a, R::Table> + Send,
         I: Debug + IntoIterator<Item = P> + Send,
         <I as IntoIterator>::IntoIter: Send,
 

@@ -913,7 +913,7 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
                     let db = #db;
                     #filter_operand_statements
 
-                    if let Some(pages) = diesel_util::OptPageRef::opt_page_refs(&#pages) {
+                    if let Some(pages) = diesel_util::OptDbPageRef::opt_page_refs(&#pages) {
                         #query_multipaginated
                     } else {
                         #query_non_paginated
@@ -929,7 +929,7 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
                         let db = #db;
                         #filter_operand_statements
 
-                        if let Some(page) = diesel_util::OptPageRef::opt_page_ref(&#page) {
+                        if let Some(page) = diesel_util::OptDbPageRef::opt_page_ref(&#page) {
                             #query_paginated
                         } else {
                             #query_non_paginated

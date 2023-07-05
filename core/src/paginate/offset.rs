@@ -1,4 +1,4 @@
-use crate::paginate::PageExt;
+use crate::paginate::DbPageExt;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 
@@ -12,7 +12,7 @@ use async_graphql_5 as async_graphql;
     any(feature = "async-graphql-4", feature = "async-graphql-5"),
     derive(async_graphql::InputObject)
 )]
-pub struct ApiPageOffset {
+pub struct PageOffset {
     #[cfg_attr(
         any(feature = "async-graphql-4", feature = "async-graphql-5"),
         graphql(validator(custom = "crate::paginate::GraphqlPaginationCountValidator"))
@@ -22,12 +22,12 @@ pub struct ApiPageOffset {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct PageOffset {
+pub struct DbPageOffset {
     pub left: i64,
     pub right: i64,
 }
 
-impl PageOffset {
+impl DbPageOffset {
     pub fn with_count(count: u32) -> Self {
         Self {
             left: 0,
@@ -36,8 +36,8 @@ impl PageOffset {
     }
 }
 
-impl From<ApiPageOffset> for PageOffset {
-    fn from(value: ApiPageOffset) -> Self {
+impl From<PageOffset> for DbPageOffset {
+    fn from(value: PageOffset) -> Self {
         Self {
             left: (value.index * value.count) as i64,
             right: (value.count + value.index * value.count) as i64,
@@ -45,7 +45,7 @@ impl From<ApiPageOffset> for PageOffset {
     }
 }
 
-impl PartialOrd for PageOffset {
+impl PartialOrd for DbPageOffset {
     fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
         if self.left != rhs.left {
             self.left.partial_cmp(&rhs.left)
@@ -55,13 +55,13 @@ impl PartialOrd for PageOffset {
     }
 }
 
-impl Ord for PageOffset {
+impl Ord for DbPageOffset {
     fn cmp(&self, rhs: &Self) -> Ordering {
         self.partial_cmp(rhs).unwrap()
     }
 }
 
-impl PageExt for PageOffset {
+impl DbPageExt for DbPageOffset {
     fn is_empty(&self) -> bool {
         self.left == self.right
     }
@@ -97,8 +97,8 @@ pub(crate) struct Range {
     pub(crate) kind: RangeKind,
 }
 
-impl From<&PageOffset> for Range {
-    fn from(value: &PageOffset) -> Self {
+impl From<&DbPageOffset> for Range {
+    fn from(value: &DbPageOffset) -> Self {
         Self {
             left_exclusive: value.left,
             right_inclusive: value.right,

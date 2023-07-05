@@ -28,9 +28,9 @@ use async_graphql_5 as async_graphql;
     any(feature = "async-graphql-4", feature = "async-graphql-5"),
     derive(async_graphql::OneofObject)
 )]
-pub enum ApiPage {
-    Cursor(ApiPageCursor),
-    Offset(ApiPageOffset),
+pub enum Page {
+    Cursor(PageCursor),
+    Offset(PageOffset),
 }
 
 #[derive(AsVariant, AsVariantMut, Derivative, IsVariant, Unwrap)]
@@ -41,40 +41,40 @@ pub enum ApiPage {
     Hash(bound = ""),
     PartialEq(bound = "")
 )]
-pub enum Page<QS: ?Sized> {
-    Cursor(PageCursor<QS>),
-    Offset(PageOffset),
+pub enum DbPage<QS: ?Sized> {
+    Cursor(DbPageCursor<QS>),
+    Offset(DbPageOffset),
 }
 
-impl<QS: ?Sized> Ord for Page<QS> {
+impl<QS: ?Sized> Ord for DbPage<QS> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(other).unwrap()
     }
 }
 
-impl<QS: ?Sized> PartialOrd for Page<QS> {
+impl<QS: ?Sized> PartialOrd for DbPage<QS> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
-            Page::Cursor(lhs) => match other {
-                Page::Cursor(rhs) => lhs.partial_cmp(rhs),
-                Page::Offset(_) => Some(Ordering::Less),
+            DbPage::Cursor(lhs) => match other {
+                DbPage::Cursor(rhs) => lhs.partial_cmp(rhs),
+                DbPage::Offset(_) => Some(Ordering::Less),
             },
-            Page::Offset(lhs) => match other {
-                Page::Cursor(_) => Some(Ordering::Greater),
-                Page::Offset(rhs) => lhs.partial_cmp(rhs),
+            DbPage::Offset(lhs) => match other {
+                DbPage::Cursor(_) => Some(Ordering::Greater),
+                DbPage::Offset(rhs) => lhs.partial_cmp(rhs),
             },
         }
     }
 }
 
-pub trait PageExt {
+pub trait DbPageExt {
     fn is_empty(&self) -> bool;
     fn merge(items: impl IntoIterator<Item = impl Borrow<Self>>) -> Vec<Self>
     where
         Self: Sized;
 }
 
-impl<QS> PageExt for Page<QS> {
+impl<QS> DbPageExt for DbPage<QS> {
     fn is_empty(&self) -> bool {
         match self {
             Self::Cursor(page_cursor) => page_cursor.is_empty(),
@@ -94,30 +94,30 @@ impl<QS> PageExt for Page<QS> {
         let page_offsets = page_offsets.into_iter().flatten().collect_vec();
 
         let mut pages = Vec::<Self>::new();
-        pages.extend(&mut PageCursor::merge(page_cursors).into_iter().map(Page::Cursor));
-        pages.extend(&mut PageOffset::merge(page_offsets).into_iter().map(Page::Offset));
+        pages.extend(&mut DbPageCursor::merge(page_cursors).into_iter().map(DbPage::Cursor));
+        pages.extend(&mut DbPageOffset::merge(page_offsets).into_iter().map(DbPage::Offset));
 
         pages
     }
 }
 
-pub(crate) struct PageSplit {
+pub(crate) struct DbPageSplit {
     cursor_indices: Vec<usize>,
     offset_indices: Vec<usize>,
 }
 
-impl<QS> Page<QS> {
-    pub(crate) fn split(pages: &[Self]) -> PageSplit {
+impl<QS> DbPage<QS> {
+    pub(crate) fn split(pages: &[Self]) -> DbPageSplit {
         let (page_cursors, page_offsets): (Vec<_>, Vec<_>) = pages
             .iter()
             .enumerate()
             .map(|(i, page)| match page {
-                Page::Cursor(_) => (Some(i), None),
-                Page::Offset(_) => (None, Some(i)),
+                DbPage::Cursor(_) => (Some(i), None),
+                DbPage::Offset(_) => (None, Some(i)),
             })
             .unzip();
 
-        PageSplit {
+        DbPageSplit {
             cursor_indices: page_cursors.into_iter().flatten().collect(),
             offset_indices: page_offsets.into_iter().flatten().collect(),
         }
@@ -126,19 +126,19 @@ impl<QS> Page<QS> {
 
 pub fn split_multipaginated_results<T: ?Sized, R: Clone>(
     results: Vec<(R, Option<i64>, Option<String>)>,
-    pages: Vec<Page<T>>,
-) -> HashMap<Page<T>, Vec<R>> {
+    pages: Vec<DbPage<T>>,
+) -> HashMap<DbPage<T>, Vec<R>> {
     use std::ops::Bound::*;
     use std::str::FromStr;
 
-    let mut pages_by_cursor_id = HashMap::<Uuid, &Page<T>>::default();
-    let mut pages_by_page_offset_range = BTreeMap::<Range, &Page<T>>::default();
+    let mut pages_by_cursor_id = HashMap::<Uuid, &DbPage<T>>::default();
+    let mut pages_by_page_offset_range = BTreeMap::<Range, &DbPage<T>>::default();
     for page in &pages {
         match page {
-            Page::Cursor(page_cursor) => {
+            DbPage::Cursor(page_cursor) => {
                 pages_by_cursor_id.insert(page_cursor.id, page);
             }
-            Page::Offset(page_offset) => {
+            DbPage::Offset(page_offset) => {
                 pages_by_page_offset_range.insert(page_offset.into(), page);
             }
         }
@@ -152,7 +152,7 @@ pub fn split_multipaginated_results<T: ?Sized, R: Clone>(
         (0, 0) // never used
     };
 
-    let mut results_by_page = HashMap::<Page<T>, Vec<R>>::default();
+    let mut results_by_page = HashMap::<DbPage<T>, Vec<R>>::default();
     for (result, row_number, page_id) in results {
         if let Some(page_id) = page_id {
             let page_id = Uuid::from_str(&page_id).unwrap();
@@ -198,70 +198,70 @@ pub fn split_multipaginated_results<T: ?Sized, R: Clone>(
 // necessary to use instead of something like Borrow
 // because coercion from double reference to single reference
 // does not occur automatically when passing in a value that needs
-// to implement Borrow<Page>
-// e.g. &[&Page].iter() == Iterator<Item = &&Page> and &&Page: !Borrow<Page>
-pub trait PageRef<'a, QS: ?Sized> {
-    fn page_ref(&'a self) -> &'a Page<QS>;
+// to implement Borrow<DbPage>
+// e.g. &[&DbPage].iter() == Iterator<Item = &&DbPage> and &&DbPage: !Borrow<DbPage>
+pub trait DbPageRef<'a, QS: ?Sized> {
+    fn page_ref(&'a self) -> &'a DbPage<QS>;
 }
 
-pub trait AsPage<QS: ?Sized> {
-    fn as_page(&self) -> Option<&Page<QS>>;
+pub trait AsDbPage<QS: ?Sized> {
+    fn as_page(&self) -> Option<&DbPage<QS>>;
 }
 
-impl<QS> AsRef<Page<QS>> for Page<QS> {
-    fn as_ref(&self) -> &Page<QS> {
+impl<QS> AsRef<DbPage<QS>> for DbPage<QS> {
+    fn as_ref(&self) -> &DbPage<QS> {
         self
     }
 }
 
-impl<'a, T, QS> PageRef<'a, QS> for T
+impl<'a, T, QS> DbPageRef<'a, QS> for T
 where
-    T: AsRef<Page<QS>>,
+    T: AsRef<DbPage<QS>>,
 {
-    fn page_ref(&'a self) -> &'a Page<QS> {
+    fn page_ref(&'a self) -> &'a DbPage<QS> {
         self.as_ref()
     }
 }
 
-impl<QS, P: Borrow<Page<QS>>> AsPage<QS> for P {
-    fn as_page(&self) -> Option<&Page<QS>> {
+impl<QS, P: Borrow<DbPage<QS>>> AsDbPage<QS> for P {
+    fn as_page(&self) -> Option<&DbPage<QS>> {
         Some(self.borrow())
     }
 }
 
-impl<QS> AsPage<QS> for Option<Page<QS>> {
-    fn as_page(&self) -> Option<&Page<QS>> {
+impl<QS> AsDbPage<QS> for Option<DbPage<QS>> {
+    fn as_page(&self) -> Option<&DbPage<QS>> {
         self.as_ref()
     }
 }
 
-impl<QS> AsPage<QS> for &Option<Page<QS>> {
-    fn as_page(&self) -> Option<&Page<QS>> {
+impl<QS> AsDbPage<QS> for &Option<DbPage<QS>> {
+    fn as_page(&self) -> Option<&DbPage<QS>> {
         self.as_ref()
     }
 }
 
-impl<QS> AsPage<QS> for Option<&Page<QS>> {
-    fn as_page(&self) -> Option<&Page<QS>> {
+impl<QS> AsDbPage<QS> for Option<&DbPage<QS>> {
+    fn as_page(&self) -> Option<&DbPage<QS>> {
         *self
     }
 }
 
-impl<QS> AsPage<QS> for &Option<&Page<QS>> {
-    fn as_page(&self) -> Option<&Page<QS>> {
+impl<QS> AsDbPage<QS> for &Option<&DbPage<QS>> {
+    fn as_page(&self) -> Option<&DbPage<QS>> {
         **self
     }
 }
 
-pub trait OptPageRef<'a, QS: ?Sized> {
-    fn opt_page_ref(&'a self) -> Option<&'a Page<QS>>;
+pub trait OptDbPageRef<'a, QS: ?Sized> {
+    fn opt_page_ref(&'a self) -> Option<&'a DbPage<QS>>;
 }
 
-impl<'a, T, QS: ?Sized> OptPageRef<'a, QS> for Option<T>
+impl<'a, T, QS: ?Sized> OptDbPageRef<'a, QS> for Option<T>
 where
-    T: OptPageRef<'a, QS>,
+    T: OptDbPageRef<'a, QS>,
 {
-    fn opt_page_ref(&'a self) -> Option<&'a Page<QS>> {
+    fn opt_page_ref(&'a self) -> Option<&'a DbPage<QS>> {
         match self {
             Some(some) => some.opt_page_ref(),
             None => None,
@@ -269,75 +269,75 @@ where
     }
 }
 
-impl<'a, 'b: 'a, T, QS: ?Sized> OptPageRef<'a, QS> for &'b T
+impl<'a, 'b: 'a, T, QS: ?Sized> OptDbPageRef<'a, QS> for &'b T
 where
-    T: OptPageRef<'a, QS>,
+    T: OptDbPageRef<'a, QS>,
 {
-    fn opt_page_ref(&'a self) -> Option<&'a Page<QS>> {
-        OptPageRef::opt_page_ref(*self)
+    fn opt_page_ref(&'a self) -> Option<&'a DbPage<QS>> {
+        OptDbPageRef::opt_page_ref(*self)
     }
 }
 
-impl<'a, QS: ?Sized> OptPageRef<'a, QS> for Page<QS> {
-    fn opt_page_ref(&'a self) -> Option<&'a Page<QS>> {
+impl<'a, QS: ?Sized> OptDbPageRef<'a, QS> for DbPage<QS> {
+    fn opt_page_ref(&'a self) -> Option<&'a DbPage<QS>> {
         Some(self)
     }
 }
 
-pub trait OptPageRefs<'a, QS: ?Sized> {
+pub trait OptDbPageRefs<'a, QS: ?Sized> {
     type _IntoIter: IntoIterator<Item = Self::_Item> + 'a;
-    type _Item: for<'b> PageRef<'b, QS>;
+    type _Item: for<'b> DbPageRef<'b, QS>;
     fn opt_page_refs(&'a self) -> Option<Self::_IntoIter>;
 }
 
 #[derive(Clone, Debug)]
-pub enum OptPageRefsEither<L, R> {
+pub enum OptDbPageRefsEither<L, R> {
     Left(L),
     Right(R),
 }
 #[derive(Clone, Debug)]
-pub enum OptPageRefsEitherIter<L, R> {
+pub enum OptDbPageRefsEitherIter<L, R> {
     Left(L),
     Right(R),
 }
 
-impl<L, R> IntoIterator for OptPageRefsEither<L, R>
+impl<L, R> IntoIterator for OptDbPageRefsEither<L, R>
 where
     L: IntoIterator,
     R: IntoIterator,
 {
-    type IntoIter = OptPageRefsEitherIter<L::IntoIter, R::IntoIter>;
-    type Item = OptPageRefsEither<L::Item, R::Item>;
+    type IntoIter = OptDbPageRefsEitherIter<L::IntoIter, R::IntoIter>;
+    type Item = OptDbPageRefsEither<L::Item, R::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         match self {
-            Self::Left(left) => OptPageRefsEitherIter::Left(left.into_iter()),
-            Self::Right(right) => OptPageRefsEitherIter::Right(right.into_iter()),
+            Self::Left(left) => OptDbPageRefsEitherIter::Left(left.into_iter()),
+            Self::Right(right) => OptDbPageRefsEitherIter::Right(right.into_iter()),
         }
     }
 }
 
-impl<L, R> Iterator for OptPageRefsEitherIter<L, R>
+impl<L, R> Iterator for OptDbPageRefsEitherIter<L, R>
 where
     L: Iterator,
     R: Iterator,
 {
-    type Item = OptPageRefsEither<L::Item, R::Item>;
+    type Item = OptDbPageRefsEither<L::Item, R::Item>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Left(left) => left.next().map(OptPageRefsEither::Left),
-            Self::Right(right) => right.next().map(OptPageRefsEither::Right),
+            Self::Left(left) => left.next().map(OptDbPageRefsEither::Left),
+            Self::Right(right) => right.next().map(OptDbPageRefsEither::Right),
         }
     }
 }
 
-impl<'a, L, R, QS: ?Sized> PageRef<'a, QS> for OptPageRefsEither<L, R>
+impl<'a, L, R, QS: ?Sized> DbPageRef<'a, QS> for OptDbPageRefsEither<L, R>
 where
-    L: PageRef<'a, QS>,
-    R: PageRef<'a, QS>,
+    L: DbPageRef<'a, QS>,
+    R: DbPageRef<'a, QS>,
 {
-    fn page_ref(&'a self) -> &'a Page<QS> {
+    fn page_ref(&'a self) -> &'a DbPage<QS> {
         match self {
             Self::Left(left) => left.page_ref(),
             Self::Right(right) => right.page_ref(),
@@ -345,75 +345,75 @@ where
     }
 }
 
-impl<'a, 'b: 'a, T, QS: ?Sized> OptPageRefs<'a, QS> for &'b T
+impl<'a, 'b: 'a, T, QS: ?Sized> OptDbPageRefs<'a, QS> for &'b T
 where
-    T: OptPageRefs<'a, QS>,
+    T: OptDbPageRefs<'a, QS>,
 {
     type _IntoIter = T::_IntoIter;
     type _Item = T::_Item;
     fn opt_page_refs(&'a self) -> Option<Self::_IntoIter> {
-        OptPageRefs::opt_page_refs(*self)
+        OptDbPageRefs::opt_page_refs(*self)
     }
 }
 
-impl<'a, T, QS: ?Sized> OptPageRefs<'a, QS> for Option<T>
+impl<'a, T, QS: ?Sized> OptDbPageRefs<'a, QS> for Option<T>
 where
-    T: OptPageRefs<'a, QS>,
+    T: OptDbPageRefs<'a, QS>,
 {
     type _IntoIter = T::_IntoIter;
     type _Item = T::_Item;
     fn opt_page_refs(&'a self) -> Option<Self::_IntoIter> {
         match self {
-            Some(some) => OptPageRefs::opt_page_refs(some),
+            Some(some) => OptDbPageRefs::opt_page_refs(some),
             None => None,
         }
     }
 }
 
-impl<'a, 'b: 'a, T: ToOwned, QS: ?Sized> OptPageRefs<'a, QS> for Cow<'b, T>
+impl<'a, 'b: 'a, T: ToOwned, QS: ?Sized> OptDbPageRefs<'a, QS> for Cow<'b, T>
 where
-    T: OptPageRefs<'a, QS> + IntoIterator,
-    T::Owned: OptPageRefs<'a, QS> + IntoIterator,
+    T: OptDbPageRefs<'a, QS> + IntoIterator,
+    T::Owned: OptDbPageRefs<'a, QS> + IntoIterator,
     T::Item: 'b,
     <T::Owned as IntoIterator>::Item: 'b,
 {
-    type _IntoIter = OptPageRefsEither<T::_IntoIter, <T::Owned as OptPageRefs<'a, QS>>::_IntoIter>;
-    type _Item = OptPageRefsEither<T::_Item, <T::Owned as OptPageRefs<'a, QS>>::_Item>;
+    type _IntoIter = OptDbPageRefsEither<T::_IntoIter, <T::Owned as OptDbPageRefs<'a, QS>>::_IntoIter>;
+    type _Item = OptDbPageRefsEither<T::_Item, <T::Owned as OptDbPageRefs<'a, QS>>::_Item>;
     fn opt_page_refs(&'a self) -> Option<Self::_IntoIter> {
         match self {
-            Cow::Borrowed(borrowed) => OptPageRefs::opt_page_refs(borrowed).map(OptPageRefsEither::Left),
-            Cow::Owned(owned) => OptPageRefs::opt_page_refs(owned).map(OptPageRefsEither::Right),
+            Cow::Borrowed(borrowed) => OptDbPageRefs::opt_page_refs(borrowed).map(OptDbPageRefsEither::Left),
+            Cow::Owned(owned) => OptDbPageRefs::opt_page_refs(owned).map(OptDbPageRefsEither::Right),
         }
     }
 }
 
-impl<'a, QS: 'a> OptPageRefs<'a, QS> for Vec<Page<QS>> {
-    type _IntoIter = &'a [Page<QS>];
-    type _Item = &'a Page<QS>;
+impl<'a, QS: 'a> OptDbPageRefs<'a, QS> for Vec<DbPage<QS>> {
+    type _IntoIter = &'a [DbPage<QS>];
+    type _Item = &'a DbPage<QS>;
     fn opt_page_refs(&'a self) -> Option<Self::_IntoIter> {
         Some(self)
     }
 }
 
-impl<'a, 'b: 'a, QS: 'a> OptPageRefs<'a, QS> for &'b [Page<QS>] {
-    type _IntoIter = &'a [Page<QS>];
-    type _Item = &'a Page<QS>;
+impl<'a, 'b: 'a, QS: 'a> OptDbPageRefs<'a, QS> for &'b [DbPage<QS>] {
+    type _IntoIter = &'a [DbPage<QS>];
+    type _Item = &'a DbPage<QS>;
     fn opt_page_refs(&'a self) -> Option<Self::_IntoIter> {
         Some(self)
     }
 }
 
-impl<'a, const N: usize, QS: 'a> OptPageRefs<'a, QS> for [Page<QS>; N] {
-    type _IntoIter = &'a [Page<QS>];
-    type _Item = &'a Page<QS>;
+impl<'a, const N: usize, QS: 'a> OptDbPageRefs<'a, QS> for [DbPage<QS>; N] {
+    type _IntoIter = &'a [DbPage<QS>];
+    type _Item = &'a DbPage<QS>;
     fn opt_page_refs(&'a self) -> Option<Self::_IntoIter> {
         Some(self)
     }
 }
 
-impl<'a, 'b: 'a, QS: 'a> OptPageRefs<'a, QS> for Cow<'b, [Page<QS>]> {
-    type _IntoIter = &'a [Page<QS>];
-    type _Item = &'a Page<QS>;
+impl<'a, 'b: 'a, QS: 'a> OptDbPageRefs<'a, QS> for Cow<'b, [DbPage<QS>]> {
+    type _IntoIter = &'a [DbPage<QS>];
+    type _Item = &'a DbPage<QS>;
     fn opt_page_refs(&'a self) -> Option<Self::_IntoIter> {
         Some(&**self)
     }

@@ -44,7 +44,7 @@ pub enum CursorDirection {
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""), Eq(bound = ""), Hash(bound = ""), PartialEq(bound = ""))]
-pub struct PageCursor<Table: ?Sized> {
+pub struct PageCursor<QS: ?Sized> {
     pub count: i64,
     pub cursor: NaiveDateTime,
     #[derivative(Hash = "ignore")]
@@ -56,14 +56,18 @@ pub struct PageCursor<Table: ?Sized> {
     #[derivative(Debug = "ignore")]
     #[derivative(Hash = "ignore")]
     #[derivative(PartialEq = "ignore")]
-    pub(crate) column_cursor_comparison_expression: Box<dyn ColumnCursorComparisonExpression<Table>>,
+    pub(crate) column_cursor_comparison_expression: Box<dyn ColumnCursorComparisonExpression<QS>>,
     #[derivative(Debug = "ignore")]
     #[derivative(Hash = "ignore")]
     #[derivative(PartialEq = "ignore")]
-    pub(crate) column_order_by_expression: Box<dyn ColumnOrderByExpression<Table>>,
+    pub(crate) column_order_by_expression: Box<dyn ColumnOrderByExpression<QS>>,
 }
 
-impl<Table: ?Sized> Clone for PageCursor<Table> {
+pub trait PageFrom<T> {
+    fn page_from(value: T) -> Self;
+}
+
+impl<QS: ?Sized> Clone for PageCursor<QS> {
     fn clone(&self) -> Self {
         Self {
             count: self.count,
@@ -78,8 +82,8 @@ impl<Table: ?Sized> Clone for PageCursor<Table> {
     }
 }
 
-pub trait ColumnCursorComparisonExpression<Table: ?Sized>:
-    AppearsOnTable<Table>
+pub trait ColumnCursorComparisonExpression<QS: ?Sized>:
+    AppearsOnTable<QS>
     + DynClone
     + Expression<SqlType = Bool>
     + QF // see bottom of file for QF definition
@@ -90,14 +94,14 @@ pub trait ColumnCursorComparisonExpression<Table: ?Sized>:
 {
 }
 
-pub trait ColumnOrderByExpression<Table: ?Sized>:
-    AppearsOnTable<Table> + DynClone + Expression<SqlType = NotSelectable> + QF + Send + Sync + 'static
+pub trait ColumnOrderByExpression<QS: ?Sized>:
+    AppearsOnTable<QS> + DynClone + Expression<SqlType = NotSelectable> + QF + Send + Sync + 'static
 {
 }
 
 impl<
-        Table: diesel::Table + ?Sized,
-        CE: AppearsOnTable<Table>
+        QS: diesel::QuerySource + ?Sized,
+        CE: AppearsOnTable<QS>
             + DynClone
             + Expression<SqlType = Bool>
             + QF
@@ -105,14 +109,14 @@ impl<
             + Sync
             + ValidGrouping<(), IsAggregate = No>
             + 'static,
-    > ColumnCursorComparisonExpression<Table> for CE
+    > ColumnCursorComparisonExpression<QS> for CE
 {
 }
 
 impl<
-        Table: diesel::Table + ?Sized,
-        CE: AppearsOnTable<Table> + DynClone + Expression<SqlType = NotSelectable> + QF + Send + Sync + 'static,
-    > ColumnOrderByExpression<Table> for CE
+        QS: diesel::QuerySource + ?Sized,
+        CE: AppearsOnTable<QS> + DynClone + Expression<SqlType = NotSelectable> + QF + Send + Sync + 'static,
+    > ColumnOrderByExpression<QS> for CE
 {
 }
 
@@ -169,13 +173,13 @@ where
     }
 }
 
-impl<Table: ?Sized> PageCursor<Table> {
+impl<QS: ?Sized> PageCursor<QS> {
     pub fn column_name(&self) -> &str {
         self.column_name
     }
 }
 
-impl<Table: ?Sized> PartialOrd for PageCursor<Table> {
+impl<QS: ?Sized> PartialOrd for PageCursor<QS> {
     fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
         if self.cursor != rhs.cursor {
             self.cursor.partial_cmp(&rhs.cursor)
@@ -185,13 +189,13 @@ impl<Table: ?Sized> PartialOrd for PageCursor<Table> {
     }
 }
 
-impl<Table: ?Sized> Ord for PageCursor<Table> {
+impl<QS: ?Sized> Ord for PageCursor<QS> {
     fn cmp(&self, rhs: &Self) -> Ordering {
         self.partial_cmp(rhs).unwrap()
     }
 }
 
-impl<Table: ?Sized> PageExt for PageCursor<Table> {
+impl<QS: ?Sized> PageExt for PageCursor<QS> {
     fn is_empty(&self) -> bool {
         self.count == 0
     }

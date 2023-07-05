@@ -23,13 +23,13 @@ static OFFSET_SUBQUERY1_ALIAS: &str = "q1";
 static OFFSET_SUBQUERY2_ALIAS: &str = "q2";
 
 #[derive(Debug, Clone)]
-pub struct PaginatedQuery<Table: ?Sized, Q0, Q2, P = (), PO = ()> {
+pub struct PaginatedQuery<QS: ?Sized, Q0, Q2, P = (), PO = ()> {
     query: Q0,
     cursor_queries: Vec<Q2>,
     /// must include PageOffset so that its `left` and `right` fields
     /// can be referenced in `QueryFragment::walk_ast` (the values
     /// cannot be created within the scope of the method)
-    pages: Option<Vec<Page<Table>>>,
+    pages: Option<Vec<Page<QS>>>,
     partition: Option<P>,
     partition_order: Option<PO>,
 }
@@ -49,36 +49,36 @@ pub struct PaginatedQueryWrapper<T, DB>(
     PhantomData<DB>,
 );
 
-pub trait Paginate<DB: Backend, Table: ?Sized>: AsQuery + Clone + Send + Sized {
+pub trait Paginate<DB: Backend, QS: ?Sized>: AsQuery + Clone + Send + Sized {
     type Output: Paginated<DB>;
 
-    fn paginate<P: AsPage<Table>>(self, page: P) -> PaginatedQueryWrapper<Self::Output, DB>;
+    fn paginate<P: AsPage<QS>>(self, page: P) -> PaginatedQueryWrapper<Self::Output, DB>;
 
     fn multipaginate<P, I>(self, pages: I) -> PaginatedQueryWrapper<Self::Output, DB>
     where
-        P: for<'a> PageRef<'a, Table>,
+        P: for<'a> PageRef<'a, QS>,
         I: Iterator<Item = P>;
 }
 
-impl<DB, Table, Q0, Q1, Q2, SqlType> Paginate<DB, Table> for Q0
+impl<DB, QS, Q0, Q1, Q2, SqlType> Paginate<DB, QS> for Q0
 where
     DB: Backend,
-    Table: diesel::Table + ?Sized,
+    QS: diesel::QuerySource,
     Q0: Clone
         + Query<SqlType = SqlType>
         + QueryFragment<DB>
         + QueryId
         + Send
-        + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Table>>, Output = Q1>,
-    Q1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Table>>, Output = Q2>,
+        + FilterDsl<Box<dyn ColumnCursorComparisonExpression<QS>>, Output = Q1>,
+    Q1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<QS>>, Output = Q2>,
     Q2: Query<SqlType = SqlType> + QueryFragment<DB> + Send,
     SqlType: 'static,
 {
-    type Output = PaginatedQuery<Table, Q0, Q2, (), ()>;
+    type Output = PaginatedQuery<QS, Q0, Q2, (), ()>;
 
     fn paginate<P>(self, page: P) -> PaginatedQueryWrapper<Self::Output, DB>
     where
-        P: AsPage<Table>,
+        P: AsPage<QS>,
     {
         let query = self.as_query();
         let pages = page.as_page().map(|page| vec![page.clone()]);
@@ -87,7 +87,7 @@ where
         if let Some(pages) = pages.as_ref() {
             let PageSplit { cursor_indices, .. } = Page::split(pages);
 
-            let page_cursors: Vec<&PageCursor<Table>> = cursor_indices
+            let page_cursors: Vec<&PageCursor<QS>> = cursor_indices
                 .into_iter()
                 .map(|i| pages[i].as_cursor().unwrap())
                 .collect_vec();
@@ -101,7 +101,7 @@ where
         }
 
         PaginatedQueryWrapper(
-            PaginatedQuery::<Table, Q0, Q2, (), ()> {
+            PaginatedQuery::<QS, Q0, Q2, (), ()> {
                 query,
                 cursor_queries,
                 pages,
@@ -114,7 +114,7 @@ where
 
     fn multipaginate<P, I>(self, pages: I) -> PaginatedQueryWrapper<Self::Output, DB>
     where
-        P: for<'a> PageRef<'a, Table>,
+        P: for<'a> PageRef<'a, QS>,
         I: Iterator<Item = P>,
     {
         let query = self.as_query();
@@ -126,7 +126,7 @@ where
 
         let PageSplit { cursor_indices, .. } = Page::split(&pages);
 
-        let page_cursors: Vec<&PageCursor<Table>> = cursor_indices
+        let page_cursors: Vec<&PageCursor<QS>> = cursor_indices
             .into_iter()
             .map(|i| pages[i].as_cursor().unwrap())
             .collect_vec();
@@ -140,7 +140,7 @@ where
         }
 
         PaginatedQueryWrapper(
-            PaginatedQuery::<Table, Q0, Q2, (), ()> {
+            PaginatedQuery::<QS, Q0, Q2, (), ()> {
                 query,
                 cursor_queries,
                 pages: Some(pages),
@@ -156,17 +156,17 @@ where
 pub trait Paginated<DB: Backend>:
     Query<SqlType = (Self::InternalSqlType, Nullable<BigInt>, Nullable<Text>)> + Send + Sized
 {
-    type Table: diesel::Table;
+    type QuerySource: diesel::QuerySource;
     type Q0<'q>: Clone
         + Query<SqlType = Self::InternalSqlType>
         + QueryFragment<DB>
         + QueryId
         + Send
-        + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Self::Table>>, Output = Self::Q1<'q>>
+        + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Self::QuerySource>>, Output = Self::Q1<'q>>
         + 'q
     where
         Self: 'q;
-    type Q1<'q>: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Self::Table>>, Output = Self::Q2<'q>>
+    type Q1<'q>: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Self::QuerySource>>, Output = Self::Q2<'q>>
     where
         Self: 'q;
     type Q2<'q>: Send + Query<SqlType = Self::InternalSqlType> + QueryFragment<DB>
@@ -177,36 +177,38 @@ pub trait Paginated<DB: Backend>:
     type QueryId: 'static;
     type InternalSqlType: 'static;
 
-    fn partition<'q, Expr: Partition + Send + 'q>(
-        self,
-        expr: Expr,
-    ) -> impl Paginated<
-        DB,
-        Q0<'q> = Self::Q0<'q>,
-        Q1<'q> = Self::Q1<'q>,
-        Q2<'q> = Self::Q2<'q>,
-        P = Expr,
-        PO = Self::PO,
-        QueryId = Self::QueryId,
-        SqlType = Self::SqlType,
-        InternalSqlType = Self::InternalSqlType,
-    > + 'q
+    type Partitioned<'q, Expr: Partition + Send + 'q>: Paginated<
+            DB,
+            Q0<'q> = Self::Q0<'q>,
+            Q1<'q> = Self::Q1<'q>,
+            Q2<'q> = Self::Q2<'q>,
+            P = Expr,
+            PO = Self::PO,
+            QueryId = Self::QueryId,
+            SqlType = Self::SqlType,
+            InternalSqlType = Self::InternalSqlType,
+        > + 'q
     where
         Self: 'q;
-    fn partition_order<'q, Expr: PartitionOrder<DB> + Send + 'q>(
-        self,
-        expr: Expr,
-    ) -> impl Paginated<
-        DB,
-        Q0<'q> = Self::Q0<'q>,
-        Q1<'q> = Self::Q1<'q>,
-        Q2<'q> = Self::Q2<'q>,
-        P = Self::P,
-        PO = Expr,
-        QueryId = Self::QueryId,
-        SqlType = Self::SqlType,
-        InternalSqlType = Self::InternalSqlType,
-    > + 'q
+
+    type PartitionOrdered<'q, Expr: PartitionOrder<DB> + Send + 'q>: Paginated<
+            DB,
+            Q0<'q> = Self::Q0<'q>,
+            Q1<'q> = Self::Q1<'q>,
+            Q2<'q> = Self::Q2<'q>,
+            P = Self::P,
+            PO = Expr,
+            QueryId = Self::QueryId,
+            SqlType = Self::SqlType,
+            InternalSqlType = Self::InternalSqlType,
+        > + 'q
+    where
+        Self: 'q;
+
+    fn partition<'q, Expr: Partition + Send + 'q>(self, expr: Expr) -> Self::Partitioned<'q, Expr>
+    where
+        Self: 'q;
+    fn partition_order<'q, Expr: PartitionOrder<DB> + Send + 'q>(self, expr: Expr) -> Self::PartitionOrdered<'q, Expr>
     where
         Self: 'q;
 
@@ -214,7 +216,7 @@ pub trait Paginated<DB: Backend>:
     fn get_cursor_queries(&self) -> &[Self::Q2<'_>];
     fn get_partition(&self) -> Option<&Self::P>;
     fn get_partition_order(&self) -> Option<&Self::PO>;
-    fn get_pages(&self) -> Option<&[Page<Self::Table>]>;
+    fn get_pages(&self) -> Option<&[Page<Self::QuerySource>]>;
 
     fn map_query<'q, F0, F2, NewQ0, NewQ1, NewQ2>(
         self,
@@ -240,30 +242,30 @@ pub trait Paginated<DB: Backend>:
             + QueryId
             + QueryFragment<DB>
             + Send
-            + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Self::Table>>, Output = NewQ1>
+            + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Self::QuerySource>>, Output = NewQ1>
             + 'q,
-        NewQ1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Self::Table>>, Output = NewQ2> + 'q,
+        NewQ1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Self::QuerySource>>, Output = NewQ2> + 'q,
         NewQ2: Query<SqlType = Self::InternalSqlType> + QueryFragment<DB> + QueryId + Send + 'q;
 }
 
 #[allow(opaque_hidden_inferred_bound)]
-impl<DB, Table, Q0, Q1, Q2, P, PO> Paginated<DB> for PaginatedQuery<Table, Q0, Q2, P, PO>
+impl<DB, QS, Q0, Q1, Q2, P, PO> Paginated<DB> for PaginatedQuery<QS, Q0, Q2, P, PO>
 where
     DB: Backend,
-    Table: diesel::Table,
+    QS: diesel::QuerySource,
     Q0: Clone
         + Query
         + QueryFragment<DB>
         + QueryId
         + Send
-        + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Table>>, Output = Q1>,
+        + FilterDsl<Box<dyn ColumnCursorComparisonExpression<QS>>, Output = Q1>,
     Q0::SqlType: 'static,
-    Q1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Table>>, Output = Q2>,
+    Q1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<QS>>, Output = Q2>,
     Q2: Query<SqlType = Q0::SqlType> + QueryFragment<DB> + Send,
     P: Partition + Send,
     PO: PartitionOrder<DB> + Send,
 {
-    type Table = Table;
+    type QuerySource = QS;
     type Q0<'q> = Q0 where Self: 'q;
     type Q1<'q> = Q1 where Self: 'q;
     type Q2<'q> = Q2 where Self: 'q;
@@ -272,24 +274,14 @@ where
     type QueryId = Q0::QueryId;
     type InternalSqlType = Q0::SqlType;
 
-    fn partition<'q, Expr: Partition + Send + 'q>(
-        self,
-        expr: Expr,
-    ) -> impl Paginated<
-        DB,
-        Q0<'q> = Self::Q0<'q>,
-        Q1<'q> = Self::Q1<'q>,
-        Q2<'q> = Self::Q2<'q>,
-        P = Expr,
-        PO = Self::PO,
-        QueryId = Self::QueryId,
-        SqlType = Self::SqlType,
-        InternalSqlType = Self::InternalSqlType,
-    > + 'q
+    type Partitioned<'q, Expr: Partition + Send + 'q> = PaginatedQuery<QS, Q0, Q2, Expr, PO> where Self: 'q;
+    type PartitionOrdered<'q, Expr: PartitionOrder<DB> + Send + 'q> = PaginatedQuery<QS, Q0, Q2, P, Expr> where Self: 'q;
+
+    fn partition<'q, Expr: Partition + Send + 'q>(self, expr: Expr) -> Self::Partitioned<'q, Expr>
     where
         Self: 'q,
     {
-        PaginatedQuery::<Table, Q0, Q2, Expr, PO> {
+        PaginatedQuery {
             query: self.query,
             cursor_queries: self.cursor_queries,
             pages: self.pages,
@@ -298,24 +290,11 @@ where
         }
     }
 
-    fn partition_order<'q, Expr: PartitionOrder<DB> + Send + 'q>(
-        self,
-        expr: Expr,
-    ) -> impl Paginated<
-        DB,
-        Q0<'q> = Self::Q0<'q>,
-        Q1<'q> = Self::Q1<'q>,
-        Q2<'q> = Self::Q2<'q>,
-        P = Self::P,
-        PO = Expr,
-        QueryId = Self::QueryId,
-        SqlType = Self::SqlType,
-        InternalSqlType = Self::InternalSqlType,
-    > + 'q
+    fn partition_order<'q, Expr: PartitionOrder<DB> + Send + 'q>(self, expr: Expr) -> Self::PartitionOrdered<'q, Expr>
     where
         Self: 'q,
     {
-        PaginatedQuery::<Table, Q0, Q2, P, Expr> {
+        PaginatedQuery {
             query: self.query,
             cursor_queries: self.cursor_queries,
             pages: self.pages,
@@ -336,7 +315,7 @@ where
     fn get_partition_order(&self) -> Option<&Self::PO> {
         self.partition_order.as_ref()
     }
-    fn get_pages(&self) -> Option<&[Page<Self::Table>]> {
+    fn get_pages(&self) -> Option<&[Page<Self::QuerySource>]> {
         self.pages.as_deref()
     }
 
@@ -364,18 +343,94 @@ where
             + QueryId
             + QueryFragment<DB>
             + Send
-            + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Self::Table>>, Output = NewQ1>
+            + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Self::QuerySource>>, Output = NewQ1>
             + 'q,
-        NewQ1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Self::Table>>, Output = NewQ2> + 'q,
+        NewQ1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Self::QuerySource>>, Output = NewQ2> + 'q,
         NewQ2: Query<SqlType = Self::InternalSqlType> + QueryFragment<DB> + Send + 'q,
     {
-        PaginatedQuery::<Table, NewQ0, NewQ2, Self::P, Self::PO> {
+        PaginatedQuery::<QS, NewQ0, NewQ2, Self::P, Self::PO> {
             query: f0(self.query),
             cursor_queries: self.cursor_queries.into_iter().map(f2).collect_vec(),
             pages: self.pages,
             partition: self.partition,
             partition_order: self.partition_order,
         }
+    }
+}
+
+#[allow(opaque_hidden_inferred_bound)]
+impl<DB: Backend + Send, P: Paginated<DB>> Paginated<DB> for PaginatedQueryWrapper<P, DB> {
+    type QuerySource = P::QuerySource;
+    type Q0<'q> = P::Q0<'q> where Self: 'q;
+    type Q1<'q> = P::Q1<'q> where Self: 'q;
+    type Q2<'q> = P::Q2<'q> where Self: 'q;
+    type P = P::P;
+    type PO = P::PO;
+    type QueryId = P::QueryId;
+    type InternalSqlType = P::InternalSqlType;
+
+    type Partitioned<'q, Expr: Partition + Send + 'q> = PaginatedQueryWrapper<P::Partitioned<'q, Expr>, DB> where Self: 'q;
+    type PartitionOrdered<'q, Expr: PartitionOrder<DB> + Send + 'q> = PaginatedQueryWrapper<P::PartitionOrdered<'q, Expr>, DB> where Self: 'q;
+
+    fn partition<'q, Expr: Partition + Send + 'q>(self, expr: Expr) -> Self::Partitioned<'q, Expr>
+    where
+        Self: 'q,
+    {
+        PaginatedQueryWrapper(self.0.partition(expr), Default::default())
+    }
+    fn partition_order<'q, Expr: PartitionOrder<DB> + Send + 'q>(self, expr: Expr) -> Self::PartitionOrdered<'q, Expr>
+    where
+        Self: 'q,
+    {
+        PaginatedQueryWrapper(self.0.partition_order(expr), Default::default())
+    }
+
+    fn get_query(&self) -> &Self::Q0<'_> {
+        self.0.get_query()
+    }
+    fn get_cursor_queries(&self) -> &[Self::Q2<'_>] {
+        self.0.get_cursor_queries()
+    }
+    fn get_partition(&self) -> Option<&Self::P> {
+        self.0.get_partition()
+    }
+    fn get_partition_order(&self) -> Option<&Self::PO> {
+        self.0.get_partition_order()
+    }
+    fn get_pages(&self) -> Option<&[Page<Self::QuerySource>]> {
+        self.0.get_pages()
+    }
+
+    fn map_query<'q, F0, F2, NewQ0, NewQ1, NewQ2>(
+        self,
+        f0: F0,
+        f2: F2,
+    ) -> impl Paginated<
+        DB,
+        Q0<'q> = NewQ0,
+        Q1<'q> = NewQ1,
+        Q2<'q> = NewQ2,
+        P = Self::P,
+        PO = Self::PO,
+        QueryId = NewQ0::QueryId,
+        SqlType = Self::SqlType,
+        InternalSqlType = Self::InternalSqlType,
+    > + 'q
+    where
+        Self: 'q,
+        F0: FnOnce(Self::Q0<'q>) -> NewQ0,
+        F2: FnMut(Self::Q2<'q>) -> NewQ2,
+        NewQ0: Clone
+            + Query<SqlType = Self::InternalSqlType>
+            + QueryId
+            + QueryFragment<DB>
+            + Send
+            + FilterDsl<Box<dyn ColumnCursorComparisonExpression<Self::QuerySource>>, Output = NewQ1>
+            + 'q,
+        NewQ1: Send + OrderDsl<Box<dyn ColumnOrderByExpression<Self::QuerySource>>, Output = NewQ2> + 'q,
+        NewQ2: Query<SqlType = Self::InternalSqlType> + QueryFragment<DB> + QueryId + Send + 'q,
+    {
+        PaginatedQueryWrapper(self.0.map_query(f0, f2), Default::default())
     }
 }
 
@@ -515,7 +570,7 @@ macro_rules! partition {
     };
 }
 
-impl<Table, Q0, Q2, P, PO, DB> QueryFragment<DB> for PaginatedQuery<Table, Q0, Q2, P, PO>
+impl<QS, Q0, Q2, P, PO, DB> QueryFragment<DB> for PaginatedQuery<QS, Q0, Q2, P, PO>
 where
     DB: Backend,
     Q0: QueryFragment<DB>,
@@ -549,7 +604,7 @@ where
 
         if has_cursor_pages {
             let cursor_queries = &self.cursor_queries;
-            let page_cursors: Vec<&PageCursor<Table>> = cursor_indices
+            let page_cursors: Vec<&PageCursor<QS>> = cursor_indices
                 .into_iter()
                 .map(|i| pages[i].as_cursor().unwrap())
                 .collect_vec();
@@ -700,7 +755,7 @@ where
 
         if has_cursor_pages {
             let cursor_queries = self.get_cursor_queries();
-            let page_cursors: Vec<&PageCursor<P::Table>> = cursor_indices
+            let page_cursors: Vec<&PageCursor<P::QuerySource>> = cursor_indices
                 .into_iter()
                 .map(|i| pages[i].as_cursor().unwrap())
                 .collect_vec();
@@ -850,13 +905,13 @@ partition!(
 );
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Paged<K, Table> {
-    pub page: Page<Table>,
+pub struct Paged<K, QS> {
+    pub page: Page<QS>,
     pub key: K,
 }
 
-impl<K, Table> AsRef<Page<Table>> for Paged<K, Table> {
-    fn as_ref(&self) -> &Page<Table> {
+impl<K, QS> AsRef<Page<QS>> for Paged<K, QS> {
+    fn as_ref(&self) -> &Page<QS> {
         &self.page
     }
 }
@@ -868,24 +923,24 @@ mod paginated_query_impls {
     use diesel::sql_types::{Nullable, Text};
 
     // Query impl also produces auto-impl of AsQuery
-    impl<Table, Q0: Query, Q2, P, PO> Query for PaginatedQuery<Table, Q0, Q2, P, PO> {
+    impl<QS, Q0: Query, Q2, P, PO> Query for PaginatedQuery<QS, Q0, Q2, P, PO> {
         type SqlType = (Q0::SqlType, Nullable<BigInt>, Nullable<Text>);
     }
 
-    impl<Table, Q0: QueryId, Q2, P, PO> QueryId for PaginatedQuery<Table, Q0, Q2, P, PO> {
+    impl<QS, Q0: QueryId, Q2, P, PO> QueryId for PaginatedQuery<QS, Q0, Q2, P, PO> {
         type QueryId = Q0::QueryId;
 
         const HAS_STATIC_QUERY_ID: bool = false;
     }
 
-    impl<C: Connection, Table, Q0, Q2, P, PO> RunQueryDsl<C> for PaginatedQuery<Table, Q0, Q2, P, PO> {}
+    impl<C: Connection, QS, Q0, Q2, P, PO> RunQueryDsl<C> for PaginatedQuery<QS, Q0, Q2, P, PO> {}
 
-    impl<P, PO, Table, Q0: QueryDsl, Q2: QueryDsl> QueryDsl for PaginatedQuery<Table, Q0, Q2, P, PO> {}
+    impl<P, PO, QS, Q0: QueryDsl, Q2: QueryDsl> QueryDsl for PaginatedQuery<QS, Q0, Q2, P, PO> {}
 
-    impl<'a, P, PO, Table: ?Sized, Q0: BoxedDsl<'a, DB>, Q2: BoxedDsl<'a, DB>, DB> BoxedDsl<'a, DB>
-        for PaginatedQuery<Table, Q0, Q2, P, PO>
+    impl<'a, P, PO, QS: ?Sized, Q0: BoxedDsl<'a, DB>, Q2: BoxedDsl<'a, DB>, DB> BoxedDsl<'a, DB>
+        for PaginatedQuery<QS, Q0, Q2, P, PO>
     {
-        type Output = PaginatedQuery<Table, IntoBoxed<'a, Q0, DB>, IntoBoxed<'a, Q2, DB>, P, PO>;
+        type Output = PaginatedQuery<QS, IntoBoxed<'a, Q0, DB>, IntoBoxed<'a, Q2, DB>, P, PO>;
         fn internal_into_boxed(self) -> IntoBoxed<'a, Self, DB> {
             PaginatedQuery {
                 query: self.query.internal_into_boxed(),
@@ -903,8 +958,8 @@ mod paginated_query_impls {
 
     macro_rules! paginated_query_query_dsl_method {
         ($trait:ident$(<$($gen:ident $(: $bound:tt $(+ $bound2:tt)?)?),+>)? { fn $fn_name:ident(self $(, $param:ident: $param_ty:ty)*) -> $output_ty:ident<Self $(, $output_gen:ident)*>; }) => {
-            impl<Table: ?Sized, P, PO, Q0: $trait$(<$($gen),+>)?, Q2: $trait$(<$($gen),+>)? $($(, $gen $(: $bound $(+ $bound2)?)?)+)?> $trait$(<$($gen),+>)? for PaginatedQuery<Table, Q0, Q2, P, PO> {
-                type Output = PaginatedQuery<Table, $output_ty<Q0 $(, $output_gen)*>, $output_ty<Q2 $(, $output_gen)*>, P, PO>;
+            impl<QS: ?Sized, P, PO, Q0: $trait$(<$($gen),+>)?, Q2: $trait$(<$($gen),+>)? $($(, $gen $(: $bound $(+ $bound2)?)?)+)?> $trait$(<$($gen),+>)? for PaginatedQuery<QS, Q0, Q2, P, PO> {
+                type Output = PaginatedQuery<QS, $output_ty<Q0 $(, $output_gen)*>, $output_ty<Q2 $(, $output_gen)*>, P, PO>;
                 fn $fn_name(self $(, $param: $param_ty)*) -> $output_ty<Self $(, $output_gen)*> {
                     PaginatedQuery {
                         cursor_queries: self.cursor_queries.into_iter().map(|q| q.$fn_name($($param.clone()),*)).collect_vec(),
@@ -917,8 +972,8 @@ mod paginated_query_impls {
             }
         };
         ($trait:ident$(<$($gen:ident $(: $bound:tt $(+ $bound2:tt)?)?),+>)? { fn $fn_name:ident(self $(, $param:ident: $param_ty:ty)*) -> Self::Output; }) => {
-            impl<Table: ?Sized, P, PO, Q0: $trait$(<$($gen),+>)?, Q2: $trait$(<$($gen),+>)? $($(, $gen $(: $bound $(+ $bound2)?)?)+)?> $trait$(<$($gen),+>)? for PaginatedQuery<Table, Q0, Q2, P, PO> {
-                type Output = PaginatedQuery<Table, <Q0 as $trait$(<$($gen),+>)?>::Output, <Q2 as $trait$(<$($gen),+>)?>::Output, P, PO>;
+            impl<QS: ?Sized, P, PO, Q0: $trait$(<$($gen),+>)?, Q2: $trait$(<$($gen),+>)? $($(, $gen $(: $bound $(+ $bound2)?)?)+)?> $trait$(<$($gen),+>)? for PaginatedQuery<QS, Q0, Q2, P, PO> {
+                type Output = PaginatedQuery<QS, <Q0 as $trait$(<$($gen),+>)?>::Output, <Q2 as $trait$(<$($gen),+>)?>::Output, P, PO>;
                 fn $fn_name(self $(, $param: $param_ty)*) -> Self::Output {
                     PaginatedQuery {
                         cursor_queries: self.cursor_queries.into_iter().map(|q| q.$fn_name($($param.clone()),*)).collect_vec(),

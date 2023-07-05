@@ -1,7 +1,7 @@
 use either::{Either, Left, Right};
+use indexmap::IndexMap;
 use proc_macro2::TokenStream;
 use quote::TokenStreamExt;
-use std::collections::HashMap;
 use syn::parse::{Error, Parse, ParseStream};
 use syn::parse2;
 use syn::spanned::Spanned;
@@ -13,6 +13,7 @@ struct DbFilterParams {
     table_name: syn::Ident,
     db: syn::Ident,
     optional_params: DbFilterOptionalParams,
+    query_source: syn::Type,
     is_static: bool,
 }
 
@@ -91,7 +92,7 @@ impl DbFilterColumnsRight for DbFilterColumn {
 /// being filterd on and the listed table, then the listed table will be joined by what diesel
 /// expects in the inner_join function
 #[derive(Debug)]
-struct DbFilterJoin(HashMap<syn::Ident, DbFilterColumns<DbFilterSubJoin>>);
+struct DbFilterJoin(IndexMap<syn::Ident, DbFilterColumns<DbFilterSubJoin>>);
 
 #[derive(Debug)]
 struct DbFilterSubJoin(JoinKind, Box<DbFilterJoin>);
@@ -143,7 +144,17 @@ impl Parse for DbFilterParams {
             let _comma: Token![,] = parse_stream.parse()?;
         }
 
+        // infer query source type
+        let joins = [
+            optional_params.inner_join.as_ref().map(|x| (JoinKind::Inner, x)),
+            optional_params.left_join.as_ref().map(|x| (JoinKind::Left, x)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
         Ok(Self {
+            query_source: parse2(DbFilterJoin::query_source(quote!(#table_name::table), joins))?,
             deserialize_ty,
             table_name,
             db,
@@ -430,7 +441,7 @@ fn get_operand_ty(parse_stream: &mut ParseStream) -> syn::Result<Option<syn::Typ
 
 impl Parse for DbFilterJoin {
     fn parse(parse_stream: ParseStream) -> syn::Result<Self> {
-        let mut join: HashMap<syn::Ident, DbFilterColumns<DbFilterSubJoin>> = Default::default();
+        let mut join: IndexMap<syn::Ident, DbFilterColumns<DbFilterSubJoin>> = Default::default();
 
         let mut first = true;
         while !parse_stream.is_empty() {
@@ -472,15 +483,6 @@ impl quote::ToTokens for DbFilterPage {
         };
         for token in tokens.into_iter() {
             token_stream.append(token);
-        }
-    }
-}
-
-impl DbFilterPage {
-    fn operand_ty(&self) -> Option<syn::Type> {
-        match self {
-            Self::ImpliedIdent(_, operand_ty) => operand_ty.clone(),
-            Self::Expr(_, operand_ty) => operand_ty.clone(),
         }
     }
 }
@@ -660,6 +662,34 @@ impl quote::ToTokens for JoinKind {
 }
 
 impl DbFilterJoin {
+    fn query_source(base: TokenStream, joins: Vec<(JoinKind, &DbFilterJoin)>) -> TokenStream {
+        let mut query_source = base;
+
+        for (join_kind, join) in joins {
+            for (table_name, columns) in join.0.iter() {
+                let sub_query_source = DbFilterJoin::query_source(
+                    quote!(#table_name::table),
+                    columns
+                        .0
+                        .iter()
+                        .filter_map(|x| x.as_ref().right())
+                        .map(|DbFilterSubJoin(join_kind, sub_join)| (*join_kind, &**sub_join))
+                        .collect::<Vec<_>>(),
+                );
+                query_source = DbFilterJoin::join_query_sources(join_kind, query_source, sub_query_source);
+            }
+        }
+
+        query_source
+    }
+
+    fn join_query_sources(join_kind: JoinKind, left: TokenStream, right: TokenStream) -> TokenStream {
+        match join_kind {
+            JoinKind::Inner => quote!(diesel::helper_types::InnerJoinQuerySource<#left, #right>),
+            JoinKind::Left => quote!(diesel::helper_types::LeftJoinQuerySource<#left, #right>),
+        }
+    }
+
     fn join_clauses(&self, join_kind: JoinKind) -> Vec<TokenStream> {
         self.0
             .iter()
@@ -699,6 +729,7 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
         db,
         optional_params,
         is_static,
+        ..
     } = parse2(tokens)?;
     let DbFilterOptionalParams {
         columns,
@@ -876,19 +907,13 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
 
     let tokens = match pages {
         Some(pages) => {
-            let operand_ty = match pages.operand_ty() {
-                Some(operand_ty) => operand_ty,
-                None => {
-                    parse_quote!(&[&Page])
-                }
-            };
             quote! {
                 async move {
                     #[allow(clippy::self_assignment)]
                     let db = #db;
                     #filter_operand_statements
 
-                    if let Some(pages) = Into::<Option<#operand_ty>>::into(#pages) {
+                    if let Some(pages) = diesel_util::OptPageRef::opt_page_refs(&#pages) {
                         #query_multipaginated
                     } else {
                         #query_non_paginated
@@ -898,17 +923,13 @@ pub fn db_filter(tokens: TokenStream) -> Result<TokenStream, Error> {
         }
         None => match page {
             Some(page) => {
-                let operand_ty = match page.operand_ty() {
-                    Some(operand_ty) => operand_ty,
-                    None => parse_quote!(Page),
-                };
                 quote! {
                     async move {
                         #[allow(clippy::self_assignment)]
                         let db = #db;
                         #filter_operand_statements
 
-                        if let Some(page) = Into::<Option<#operand_ty>>::into(#page) {
+                        if let Some(page) = diesel_util::OptPageRef::opt_page_ref(&#page) {
                             #query_paginated
                         } else {
                             #query_non_paginated
@@ -969,13 +990,15 @@ fn get_dynamic_query(
     NestedQuery {
         multipaginated: quote! {
             #tokens
-            diesel_util::_Db::query(&db, move |conn| Box::pin(query
+            let result = diesel_util::_Db::query(&db, move |conn| Box::pin(query
                 #group_by_clause
                 #order_by_clauses
                 .multipaginate(pages.iter())
                 #partition_clause
-                .get_results::<#deserialize_ty>(conn)
-            )).await
+                .get_results::<(#deserialize_ty, Option<i64>, Option<String>)>(conn)
+            ))
+            .await;
+            result.map(move |results| split_multipaginated_results(results, pages))
         },
         non_paginated: quote! {
             #tokens
@@ -992,8 +1015,10 @@ fn get_dynamic_query(
                 #order_by_clauses
                 .paginate(page)
                 #partition_clause
-                .get_results::<#deserialize_ty>(conn)
-            )).await
+                .get_results::<(#deserialize_ty, Option<i64>, Option<String>)>(conn)
+            ))
+            .await
+            .map(|results| results.into_iter().map(|(result, _, _)| result).collect::<Vec<_>>())
         },
     }
 }
@@ -1027,7 +1052,7 @@ fn get_static_query(
             .collect();
         return NestedQuery {
             multipaginated: quote! {
-                diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
+                let result = diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
                     #(#filter_clauses)*
                     #group_by_clause
                     #order_by_clauses
@@ -1035,7 +1060,8 @@ fn get_static_query(
                     .multipaginate(pages.iter())
                     #partition_clause
                     .get_results::<#deserialize_ty>(conn)
-                )).await
+                )).await;
+                result.map(move |results| split_multipaginated_results(results, pages))
             },
             non_paginated: quote! {
                 diesel_util::_Db::query(&db, move |conn| Box::pin(#base_query
@@ -1054,8 +1080,10 @@ fn get_static_query(
                     #select_clause
                     .paginate(page)
                     #partition_clause
-                    .get_results::<#deserialize_ty>(conn)
-                )).await
+                    .get_results::<(#deserialize_ty, Option<i64>, Option<String>)>(conn)
+                ))
+                .await
+                .map(|results| results.into_iter().map(|(result, _, _)| result).collect::<Vec<_>>())
             },
         };
     }

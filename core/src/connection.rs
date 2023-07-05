@@ -454,74 +454,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                 .multipaginate(pages.iter()),
             (R, Option<i64>, Option<String>)
         )
-        .map_ok(move |results| {
-            use std::collections::BTreeMap;
-            use std::ops::Bound::*;
-            use std::str::FromStr;
-
-            let mut pages_by_cursor_id = HashMap::<Uuid, &Page<R::Table>>::default();
-            let mut pages_by_page_offset_range = BTreeMap::<Range, &Page<R::Table>>::default();
-            for page in &pages {
-                match page {
-                    Page::Cursor(page_cursor) => {
-                        pages_by_cursor_id.insert(page_cursor.id, page);
-                    }
-                    Page::Offset(page_offset) => {
-                        pages_by_page_offset_range.insert(page_offset.into(), page);
-                    }
-                }
-            }
-            let (range_min, range_max) = if !pages_by_page_offset_range.is_empty() {
-                (
-                    pages_by_page_offset_range.first_key_value().unwrap().0.left_exclusive,
-                    pages_by_page_offset_range.last_key_value().unwrap().0.right_inclusive,
-                )
-            } else {
-                (0, 0) // never used
-            };
-
-            let mut results_by_page = HashMap::<Page<R::Table>, Vec<R>>::default();
-            for (result, row_number, page_id) in results {
-                if let Some(page_id) = page_id {
-                    let page_id = Uuid::from_str(&page_id).unwrap();
-                    let page = pages_by_cursor_id.get(&page_id).unwrap();
-                    if !results_by_page.contains_key(page) {
-                        results_by_page.insert((*page).clone(), vec![]);
-                    }
-                    results_by_page.get_mut(page).unwrap().push(result);
-                } else if let Some(row_number) = row_number {
-                    let mut matches = pages_by_page_offset_range.range((
-                        Excluded(Range {
-                            left_exclusive: range_min,
-                            right_inclusive: row_number - 1,
-                            kind: RangeKind::LowerBound,
-                        }),
-                        Excluded(Range {
-                            left_exclusive: row_number,
-                            right_inclusive: range_max,
-                            kind: RangeKind::UpperBound,
-                        }),
-                    ));
-                    if let Some((_, first_match)) = matches.next() {
-                        let new_pages_and_results =
-                            matches.map(|(_, page)| (*page, result.clone())).collect::<Vec<_>>();
-
-                        if !results_by_page.contains_key(first_match) {
-                            results_by_page.insert((*first_match).clone(), vec![]);
-                        }
-                        results_by_page.get_mut(first_match).unwrap().push(result);
-
-                        for (page, result) in new_pages_and_results {
-                            if !results_by_page.contains_key(page) {
-                                results_by_page.insert((*page).clone(), vec![]);
-                            }
-                            results_by_page.get_mut(page).unwrap().push(result);
-                        }
-                    }
-                }
-            }
-            results_by_page
-        })
+        .map_ok(move |results| split_multipaginated_results(results, pages))
         .boxed()
     }
 

@@ -27,6 +27,15 @@ pub struct PageOffset {
     pub right: i64,
 }
 
+impl PageOffset {
+    pub fn with_count(count: u32) -> Self {
+        Self {
+            left: 0,
+            right: count as i64,
+        }
+    }
+}
+
 impl From<ApiPageOffset> for PageOffset {
     fn from(value: ApiPageOffset) -> Self {
         Self {

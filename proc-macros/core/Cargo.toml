@@ -9,6 +9,7 @@ rust-version.workspace = true
 convert_case.workspace = true
 derive_more.workspace = true
 either.workspace = true
+indexmap.workspace = true
 itertools.workspace = true
 proc-macro2.workspace = true
 proc-macro-util.workspace = true

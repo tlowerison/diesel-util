@@ -27,6 +27,12 @@ pub struct DbPageOffset {
     pub right: i64,
 }
 
+impl PageOffset {
+    pub fn with_count(count: u32) -> Self {
+        Self { count, index: 0 }
+    }
+}
+
 impl DbPageOffset {
     pub fn with_count(count: u32) -> Self {
         Self {

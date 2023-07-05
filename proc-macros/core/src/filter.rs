@@ -275,7 +275,7 @@ impl Parse for DbFilterOptionalParams {
                     let expr: syn::Expr = parse_stream.parse()?;
                     select = Some(expr);
                 },
-                _ => return Err(syn::Error::new_spanned(arg, "db_filter's optional params block only accepts fields `columns`,`filter`,`group_by`,`inner_join`,`join` (alias of `inner_join`),`no_deleted_at`,`left_join`,`left_outer_join`,`page`,`select`")),
+                _ => return Err(syn::Error::new_spanned(arg, "db_filter's optional params block only accepts fields `columns`,`filter`,`group_by`,`inner_join`,`join` (alias of `inner_join`),`no_deleted_at`,`left_join`,`left_outer_join`,`order_by`,`page`,`select`")),
             };
 
             first = false;

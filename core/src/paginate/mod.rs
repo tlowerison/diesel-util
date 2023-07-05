@@ -12,6 +12,7 @@ pub use crate::paginate::offset::*;
 #[cfg(any(feature = "async-graphql-4", feature = "async-graphql-5"))]
 pub(crate) use crate::paginate::graphql::*;
 
+use chrono::NaiveDateTime;
 use itertools::Itertools;
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
@@ -31,43 +32,6 @@ use async_graphql_5 as async_graphql;
 pub enum Page {
     Cursor(PageCursor),
     Offset(PageOffset),
-}
-
-impl Page {
-    pub fn on_column<QS, C>(self, column: C) -> DbPage<QS>
-    where
-        QS: ::diesel::query_source::QuerySource,
-        C: ::diesel::AppearsOnTable<QS>
-            + Clone
-            + ::diesel::Column<SqlType = ::diesel::sql_types::Timestamp>
-            + QF
-            + Send
-            + Sync
-            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
-            + 'static,
-        <C as ::diesel::expression::Expression>::SqlType: ::diesel::sql_types::SingleValue,
-    {
-        match self {
-            Self::Cursor(cursor) => DbPage::Cursor(cursor.on_column(column)),
-            Self::Offset(offset) => DbPage::Offset(offset.into()),
-        }
-    }
-
-    pub fn map_on_column<QS, C>(column: C) -> impl (Fn(Self) -> DbPage<QS>) + 'static
-    where
-        QS: ::diesel::query_source::QuerySource,
-        C: ::diesel::AppearsOnTable<QS>
-            + Clone
-            + ::diesel::Column<SqlType = ::diesel::sql_types::Timestamp>
-            + QF
-            + Send
-            + Sync
-            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
-            + 'static,
-        <C as ::diesel::expression::Expression>::SqlType: ::diesel::sql_types::SingleValue,
-    {
-        move |page| page.on_column(column.clone())
-    }
 }
 
 #[derive(AsVariant, AsVariantMut, Derivative, IsVariant, Unwrap)]
@@ -230,6 +194,108 @@ pub fn split_multipaginated_results<T: ?Sized, R: Clone>(
     }
 
     results_by_page
+}
+
+impl Page {
+    pub fn on_column<QS, C>(self, column: C) -> DbPage<QS>
+    where
+        QS: ::diesel::query_source::QuerySource,
+        C: ::diesel::AppearsOnTable<QS> + Clone + ::diesel::Column + QF + Send + Sync,
+        <C as ::diesel::expression::Expression>::SqlType: ::diesel::sql_types::SingleValue,
+
+        NaiveDateTime: ::diesel::expression::AsExpression<C::SqlType>,
+
+        ::diesel::helper_types::Gt<C, NaiveDateTime>: ::diesel::expression::Expression,
+        ::diesel::helper_types::Lt<C, NaiveDateTime>: ::diesel::expression::Expression,
+        ::diesel::helper_types::GtEq<C, NaiveDateTime>: ::diesel::expression::Expression,
+        ::diesel::helper_types::LtEq<C, NaiveDateTime>: ::diesel::expression::Expression,
+
+        ::diesel::dsl::Nullable<::diesel::helper_types::Gt<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+            + dyn_clone::DynClone
+            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+        ::diesel::dsl::Nullable<::diesel::helper_types::GtEq<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+            + dyn_clone::DynClone
+            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+        ::diesel::dsl::Nullable<::diesel::helper_types::Lt<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+            + dyn_clone::DynClone
+            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+        ::diesel::dsl::Nullable<::diesel::helper_types::LtEq<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+            + dyn_clone::DynClone
+            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+    {
+        match self {
+            Self::Cursor(cursor) => DbPage::Cursor(cursor.on_column(column)),
+            Self::Offset(offset) => DbPage::Offset(offset.into()),
+        }
+    }
+
+    pub fn map_on_column<QS, C>(column: C) -> impl (Fn(Self) -> DbPage<QS>) + 'static
+    where
+        QS: ::diesel::query_source::QuerySource,
+        C: ::diesel::AppearsOnTable<QS> + Clone + ::diesel::Column + QF + Send + Sync,
+        <C as ::diesel::expression::Expression>::SqlType: ::diesel::sql_types::SingleValue,
+
+        NaiveDateTime: ::diesel::expression::AsExpression<C::SqlType>,
+
+        ::diesel::helper_types::Gt<C, NaiveDateTime>: ::diesel::expression::Expression,
+        ::diesel::helper_types::Lt<C, NaiveDateTime>: ::diesel::expression::Expression,
+        ::diesel::helper_types::GtEq<C, NaiveDateTime>: ::diesel::expression::Expression,
+        ::diesel::helper_types::LtEq<C, NaiveDateTime>: ::diesel::expression::Expression,
+        ::diesel::dsl::Nullable<::diesel::helper_types::Gt<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+            + dyn_clone::DynClone
+            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+        ::diesel::dsl::Nullable<::diesel::helper_types::GtEq<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+            + dyn_clone::DynClone
+            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+        ::diesel::dsl::Nullable<::diesel::helper_types::Lt<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+            + dyn_clone::DynClone
+            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+        ::diesel::dsl::Nullable<::diesel::helper_types::LtEq<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+            + dyn_clone::DynClone
+            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + 'static,
+    {
+        move |page| page.on_column(column.clone())
+    }
 }
 
 // necessary to use instead of something like Borrow

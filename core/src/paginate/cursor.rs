@@ -2,9 +2,10 @@ use crate::paginate::DbPageExt;
 use chrono::NaiveDateTime;
 use diesel::expression::expression_types::NotSelectable;
 use diesel::expression::is_aggregate::No;
-use diesel::expression::ValidGrouping;
-use diesel::sql_types::{Bool, SingleValue, Timestamp};
-use diesel::{AppearsOnTable, Column, Expression, ExpressionMethods};
+use diesel::expression::{AsExpression, ValidGrouping};
+use diesel::expression_methods::NullableExpressionMethods;
+use diesel::sql_types::{Bool, Nullable, SingleValue};
+use diesel::{helper_types, AppearsOnTable, Column, Expression, ExpressionMethods};
 use dyn_clone::DynClone;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -85,7 +86,7 @@ impl<QS: ?Sized> Clone for DbPageCursor<QS> {
 pub trait ColumnCursorComparisonExpression<QS: ?Sized>:
     AppearsOnTable<QS>
     + DynClone
-    + Expression<SqlType = Bool>
+    + Expression<SqlType = Nullable<Bool>>
     + QF // see bottom of file for QF definition
     + Send
     + Sync
@@ -103,7 +104,7 @@ impl<
         QS: diesel::QuerySource + ?Sized,
         CE: AppearsOnTable<QS>
             + DynClone
-            + Expression<SqlType = Bool>
+            + Expression<SqlType = Nullable<Bool>>
             + QF
             + Send
             + Sync
@@ -124,26 +125,59 @@ impl PageCursor {
     pub fn on_column<QS, C>(self, column: C) -> DbPageCursor<QS>
     where
         QS: diesel::query_source::QuerySource,
-        C: AppearsOnTable<QS>
-            + Clone
-            + Column<SqlType = Timestamp>
-            + QF
+        C: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync,
+        <C as Expression>::SqlType: SingleValue,
+        NaiveDateTime: AsExpression<C::SqlType>,
+
+        helper_types::Gt<C, NaiveDateTime>: Expression,
+        helper_types::Lt<C, NaiveDateTime>: Expression,
+        helper_types::GtEq<C, NaiveDateTime>: Expression,
+        helper_types::LtEq<C, NaiveDateTime>: Expression,
+
+        diesel::dsl::Nullable<helper_types::Gt<C, NaiveDateTime>>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+            + QF // see bottom of file for QF definition
             + Send
             + Sync
             + ValidGrouping<(), IsAggregate = No>
             + 'static,
-        <C as Expression>::SqlType: SingleValue,
+        diesel::dsl::Nullable<helper_types::GtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+        diesel::dsl::Nullable<helper_types::Lt<C, NaiveDateTime>>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+        diesel::dsl::Nullable<helper_types::LtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+            + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
     {
         let is_comparator_inclusive = self.is_comparator_inclusive.unwrap_or_default();
+
         DbPageCursor {
             count: self.count as i64,
             id: Uuid::new_v4(),
             column_name: C::NAME,
             column_cursor_comparison_expression: match (is_comparator_inclusive, self.direction) {
-                (false, CursorDirection::Following) => Box::new(column.clone().gt(self.cursor)),
-                (false, CursorDirection::Preceding) => Box::new(column.clone().lt(self.cursor)),
-                (true, CursorDirection::Following) => Box::new(column.clone().ge(self.cursor)),
-                (true, CursorDirection::Preceding) => Box::new(column.clone().le(self.cursor)),
+                (false, CursorDirection::Following) => Box::new(column.clone().gt(self.cursor).nullable()),
+                (false, CursorDirection::Preceding) => Box::new(column.clone().lt(self.cursor).nullable()),
+                (true, CursorDirection::Following) => Box::new(column.clone().ge(self.cursor).nullable()),
+                (true, CursorDirection::Preceding) => Box::new(column.clone().le(self.cursor).nullable()),
             },
             column_order_by_expression: match self.direction {
                 CursorDirection::Following => Box::new(column.asc()),
@@ -156,17 +190,50 @@ impl PageCursor {
     }
 }
 
-impl<C> From<(PageCursor, C)> for DbPageCursor<C::Table>
+impl<QS, C> From<(PageCursor, C)> for DbPageCursor<QS>
 where
-    C: AppearsOnTable<C::Table>
-        + Clone
-        + Column<SqlType = Timestamp>
-        + QF
+    QS: diesel::query_source::QuerySource,
+    C: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync + ValidGrouping<(), IsAggregate = No> + 'static,
+    <C as Expression>::SqlType: SingleValue,
+    NaiveDateTime: AsExpression<C::SqlType>,
+
+    helper_types::Gt<C, NaiveDateTime>: Expression,
+    helper_types::Lt<C, NaiveDateTime>: Expression,
+    helper_types::GtEq<C, NaiveDateTime>: Expression,
+    helper_types::LtEq<C, NaiveDateTime>: Expression,
+
+    diesel::dsl::Nullable<helper_types::Gt<C, NaiveDateTime>>: AppearsOnTable<QS>
+        + DynClone
+        + Expression<SqlType = Nullable<Bool>>
+        + QF // see bottom of file for QF definition
         + Send
         + Sync
         + ValidGrouping<(), IsAggregate = No>
         + 'static,
-    <C as Expression>::SqlType: SingleValue,
+    diesel::dsl::Nullable<helper_types::GtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+        + DynClone
+        + Expression<SqlType = Nullable<Bool>>
+        + QF // see bottom of file for QF definition
+        + Send
+        + Sync
+        + ValidGrouping<(), IsAggregate = No>
+        + 'static,
+    diesel::dsl::Nullable<helper_types::Lt<C, NaiveDateTime>>: AppearsOnTable<QS>
+        + DynClone
+        + Expression<SqlType = Nullable<Bool>>
+        + QF // see bottom of file for QF definition
+        + Send
+        + Sync
+        + ValidGrouping<(), IsAggregate = No>
+        + 'static,
+    diesel::dsl::Nullable<helper_types::LtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+        + DynClone
+        + Expression<SqlType = Nullable<Bool>>
+        + QF // see bottom of file for QF definition
+        + Send
+        + Sync
+        + ValidGrouping<(), IsAggregate = No>
+        + 'static,
 {
     fn from((value, column): (PageCursor, C)) -> Self {
         PageCursor::on_column(value, column)

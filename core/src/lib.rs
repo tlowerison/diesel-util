@@ -6,8 +6,20 @@
     trait_alias
 )]
 
+#[cfg(not(any(feature = "anyhow", feature = "color-eyre")))]
+compile_error!("One of `anyhow` or `color-eyre` features must be enabled.");
+
+#[cfg(all(feature = "anyhow", feature = "color-eyre"))]
+compile_error!("Cannot compile with both `anyhow` and `color-eyre` features enabled.");
+
 #[cfg(all(feature = "async-graphql-4", feature = "async-graphql-5"))]
 compile_error!("Two versions of the subdependency `async-graphql` were enabled, please only enable one by only using one of the features: `async-graphql-4`, `async-graphql-5`.");
+
+#[cfg(feature = "anyhow")]
+pub(crate) use anyhow::Error as InternalError;
+
+#[cfg(feature = "color-eyre")]
+pub(crate) use color_eyre::Report as InternalError;
 
 #[macro_use]
 extern crate async_backtrace;

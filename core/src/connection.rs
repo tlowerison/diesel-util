@@ -60,7 +60,7 @@ pub type DbConnRef<'a, C> = DbConnection<C, &'a mut C>;
 #[derivative(Debug)]
 #[error("{source}")]
 pub struct TxCleanupError {
-    pub source: anyhow::Error,
+    pub source: InternalError,
     #[derivative(Debug = "ignore")]
     pub backtrace: Option<Box<[Location]>>,
 }
@@ -69,15 +69,15 @@ impl TxCleanupError {
     #[framed]
     pub fn new<S: Display + Debug + Send + Sync + 'static>(msg: S) -> Self {
         Self {
-            source: anyhow::Error::msg(msg),
+            source: InternalError::msg(msg),
             backtrace: backtrace(),
         }
     }
 }
 
-impl From<anyhow::Error> for TxCleanupError {
+impl From<InternalError> for TxCleanupError {
     #[framed]
-    fn from(source: anyhow::Error) -> Self {
+    fn from(source: InternalError) -> Self {
         Self {
             source,
             backtrace: backtrace(),

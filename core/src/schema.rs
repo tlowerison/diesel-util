@@ -1,8 +1,8 @@
-use serde_json::Value;
-
 pub use lazy_static::lazy_static as diesel_util_lazy_static;
 
+use crate::InternalError;
 use diesel::sql_types::{is_nullable::*, *};
+use serde_json::Value;
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -129,7 +129,7 @@ pub trait SchemaExpressionMethods {
         table_name: &str,
         column_name: &str,
         value: &'a Value,
-    ) -> Result<O, anyhow::Error>
+    ) -> Result<O, InternalError>
     where
         DB: Backend + DieselReserveSpecialization,
         Q: FilterDsl<Box<dyn BoxableExpression<Q, DB, SqlType = Bool>>>,

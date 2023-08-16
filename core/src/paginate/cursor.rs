@@ -15,15 +15,25 @@ use uuid::Uuid;
 use async_graphql_4 as async_graphql;
 #[cfg(feature = "async-graphql-5")]
 use async_graphql_5 as async_graphql;
+#[cfg(feature = "async-graphql-6")]
+use async_graphql_6 as async_graphql;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[cfg_attr(
-    any(feature = "async-graphql-4", feature = "async-graphql-5"),
+    any(
+        feature = "async-graphql-4",
+        feature = "async-graphql-5",
+        feature = "async-graphql-6"
+    ),
     derive(async_graphql::InputObject)
 )]
 pub struct PageCursor {
     #[cfg_attr(
-        any(feature = "async-graphql-4", feature = "async-graphql-5"),
+        any(
+            feature = "async-graphql-4",
+            feature = "async-graphql-5",
+            feature = "async-graphql-6"
+        ),
         graphql(validator(custom = "crate::paginate::GraphqlPaginationCountValidator"))
     )]
     pub count: u32,
@@ -61,7 +71,11 @@ impl PartialOrd for PageCursor {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(
-    any(feature = "async-graphql-4", feature = "async-graphql-5"),
+    any(
+        feature = "async-graphql-4",
+        feature = "async-graphql-5",
+        feature = "async-graphql-6"
+    ),
     derive(async_graphql::Enum)
 )]
 pub enum CursorDirection {

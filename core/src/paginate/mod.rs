@@ -9,7 +9,11 @@ pub use crate::paginate::diesel::*;
 pub use crate::paginate::env::*;
 pub use crate::paginate::offset::*;
 
-#[cfg(any(feature = "async-graphql-4", feature = "async-graphql-5"))]
+#[cfg(any(
+    feature = "async-graphql-4",
+    feature = "async-graphql-5",
+    feature = "async-graphql-6"
+))]
 pub(crate) use crate::paginate::graphql::*;
 
 use chrono::NaiveDateTime;
@@ -23,12 +27,18 @@ use uuid::Uuid;
 use async_graphql_4 as async_graphql;
 #[cfg(feature = "async-graphql-5")]
 use async_graphql_5 as async_graphql;
+#[cfg(feature = "async-graphql-6")]
+use async_graphql_6 as async_graphql;
 
 #[derive(
     AsVariant, AsVariantMut, Clone, Copy, Debug, Deserialize, Eq, Hash, IsVariant, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[cfg_attr(
-    any(feature = "async-graphql-4", feature = "async-graphql-5"),
+    any(
+        feature = "async-graphql-4",
+        feature = "async-graphql-5",
+        feature = "async-graphql-6"
+    ),
     derive(async_graphql::OneofObject)
 )]
 pub enum Page {

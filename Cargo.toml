@@ -17,6 +17,7 @@ anyhow = "1"
 async-backtrace = "^0.2"
 async-graphql-4 = { package = "async-graphql", version = "4", features = ["chrono"] }
 async-graphql-5 = { package = "async-graphql", version = "5", features = ["chrono"] }
+async-graphql-6 = { package = "async-graphql", version = "6", features = ["chrono"] }
 async-trait = "^0.1"
 cast_trait_object = "0.1"
 cfg-if = "1"

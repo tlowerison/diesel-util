@@ -13,7 +13,11 @@ compile_error!("One of `anyhow` or `color-eyre` features must be enabled.");
 compile_error!("Cannot compile with both `anyhow` and `color-eyre` features enabled.");
 
 #[cfg(all(feature = "async-graphql-4", feature = "async-graphql-5"))]
-compile_error!("Two versions of the subdependency `async-graphql` were enabled, please only enable one by only using one of the features: `async-graphql-4`, `async-graphql-5`.");
+compile_error!("More than one version of the subdependency `async-graphql` was enabled, please only enable one by only using one of the features: `async-graphql-4`, `async-graphql-5`, `async-graphql-6`.");
+#[cfg(all(feature = "async-graphql-5", feature = "async-graphql-6"))]
+compile_error!("More than one version of the subdependency `async-graphql` was enabled, please only enable one by only using one of the features: `async-graphql-4`, `async-graphql-5`, `async-graphql-6`.");
+#[cfg(all(feature = "async-graphql-6", feature = "async-graphql-4"))]
+compile_error!("More than one version of the subdependency `async-graphql` was enabled, please only enable one by only using one of the features: `async-graphql-4`, `async-graphql-5`, `async-graphql-6`.");
 
 #[cfg(feature = "anyhow")]
 pub(crate) use anyhow::Error as InternalError;

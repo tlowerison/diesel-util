@@ -634,7 +634,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                     .map(|record| (record.id().clone(), record))
                     .collect::<HashMap<_, _>>();
 
-                Ok(ids.iter().map(|id| all_records.remove(id).unwrap()).collect::<Vec<_>>())
+                Ok(ids.iter().filter_map(|id| all_records.remove(id)).collect::<Vec<_>>())
             }
             .scope_boxed()
         }))

@@ -1,6 +1,7 @@
 #![allow(incomplete_features)]
 #![feature(
     associated_type_defaults,
+    const_type_name,
     return_position_impl_trait_in_trait,
     specialization,
     trait_alias
@@ -8,7 +9,6 @@
 
 #[cfg(not(any(feature = "anyhow", feature = "color-eyre")))]
 compile_error!("One of `anyhow` or `color-eyre` features must be enabled.");
-
 #[cfg(all(feature = "anyhow", feature = "color-eyre"))]
 compile_error!("Cannot compile with both `anyhow` and `color-eyre` features enabled.");
 
@@ -37,8 +37,13 @@ extern crate derivative;
 extern crate derive_more;
 #[macro_use]
 extern crate serde;
-#[macro_use]
-extern crate tracing;
+
+cfg_if! {
+    if #[cfg(feature = "tracing")] {
+        #[macro_use]
+        extern crate tracing;
+    }
+}
 
 mod audit;
 mod connection;

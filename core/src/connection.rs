@@ -25,8 +25,10 @@ use std::fmt::Display;
 use std::ops::Deref;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
-use tracing::Instrument;
 use uuid::Uuid;
+
+#[cfg(feature = "tracing")]
+use tracing::Instrument;
 
 pub trait IncludesChanges {
     fn includes_changes(&self) -> bool;
@@ -86,9 +88,13 @@ impl From<InternalError> for TxCleanupError {
 }
 
 impl From<TxCleanupError> for Error {
-    fn from(value: TxCleanupError) -> Self {
-        error!("transaction cleanup error occurred within a transaction whose error type is diesel::result::Error, converting error to diesel::result::Error::RollbackTransaction");
-        error!("original error: {value}");
+    fn from(_value: TxCleanupError) -> Self {
+        cfg_if! {
+            if #[cfg(feature = "tracing")] {
+                error!("transaction cleanup error occurred within a transaction whose error type is diesel::result::Error, converting error to diesel::result::Error::RollbackTransaction");
+                error!("original error: {_value}");
+            }
+        }
         Self::RollbackTransaction
     }
 }
@@ -193,13 +199,19 @@ pub type InsertStmt<Table, T> =
     InsertStatement<Table, BatchInsert<Vec<<T as Insertable<Table>>::Values>, Table, (), false>>;
 
 macro_rules! instrument_err {
-    ($fut:expr) => {
-        $fut.map_err(|err| {
-            tracing::Span::current().record("error", &&*format!("{err:?}"));
-            err
-        })
-        .instrument(tracing::Span::current())
-    };
+    ($fut:expr) => {{
+        cfg_if! {
+            if #[cfg(feature = "tracing")] {
+                $fut.map_err(|err| {
+                    tracing::Span::current().record("error", &&*format!("{err:?}"));
+                    err
+                })
+                .instrument(tracing::Span::current())
+            } else {
+                $fut
+            }
+        }
+    }};
 }
 
 macro_rules! execute_query {
@@ -266,7 +278,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[instrument(skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     fn get<'life0, 'async_trait, 'query, R, T, Pk, F, I, S>(
         &'life0 self,
         ids: I,
@@ -300,6 +312,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("Self", std::any::type_name::<Self>());
+
         let ids = ids.into_iter();
         if ids.len() == 0 {
             return Box::pin(ready(Ok(vec![])));
@@ -315,7 +330,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[instrument(skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     fn get_by_column<'life0, 'async_trait, 'query, R, U, Q, C, S>(
         &'life0 self,
         c: C,
@@ -346,6 +361,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("Self", std::any::type_name::<Self>());
+
         execute_query!(
             self,
             R::table()
@@ -357,7 +375,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[instrument(skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     fn get_page<'life0, 'async_trait, 'query, R, P, F, S>(
         &'life0 self,
         page: P,
@@ -392,6 +410,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("Self", std::any::type_name::<Self>());
+
         if page.borrow().is_empty() {
             return Box::pin(ready(Ok(vec![])));
         }
@@ -407,7 +428,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[allow(clippy::type_complexity)]
     #[framed]
-    #[instrument(skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     fn get_pages<'life0, 'async_trait, 'query, R, P, I, F, S>(
         &'life0 self,
         pages: I,
@@ -444,6 +465,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("Self", std::any::type_name::<Self>());
+
         let pages = pages.into_iter().map(|x| x.page_ref().clone()).collect::<Vec<_>>();
 
         execute_query!(
@@ -459,7 +483,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[instrument(skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     fn insert<'life0, 'async_trait, 'query, 'v, R, V, I, Op, S>(
         &'life0 self,
         values: I,
@@ -501,6 +525,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         I: 'async_trait + 'v,
         S: 'async_trait,
     {
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("Self", std::any::type_name::<Self>());
+
         instrument_err!(self.raw_tx(move |conn| {
             let values = values.into_iter().collect::<Vec<_>>();
             if values.is_empty() {
@@ -525,7 +552,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[instrument(skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     fn update<'life0, 'async_trait, 'query, 'v, R, V, I, T, Pk, F, S>(
         &'life0 self,
         patches: I,
@@ -588,6 +615,9 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         F: 'async_trait,
         S: 'async_trait,
     {
+        #[cfg(feature = "tracing")]
+        tracing::Span::current().record("Self", std::any::type_name::<Self>());
+
         let patches = patches.into_iter().collect::<Vec<V>>();
         let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
         let no_change_patch_ids = patches

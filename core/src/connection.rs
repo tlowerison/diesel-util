@@ -278,7 +278,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn get<'life0, 'async_trait, 'query, R, T, Pk, F, I, S>(
         &'life0 self,
         ids: I,
@@ -330,7 +330,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn get_by_column<'life0, 'async_trait, 'query, R, U, Q, C, S>(
         &'life0 self,
         c: C,
@@ -375,7 +375,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn get_page<'life0, 'async_trait, 'query, R, P, F, S>(
         &'life0 self,
         page: P,
@@ -428,7 +428,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
     #[allow(clippy::type_complexity)]
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn get_pages<'life0, 'async_trait, 'query, R, P, I, F, S>(
         &'life0 self,
         pages: I,
@@ -483,7 +483,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn insert<'life0, 'async_trait, 'query, 'v, R, V, I, Op, S>(
         &'life0 self,
         values: I,
@@ -552,7 +552,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn update<'life0, 'async_trait, 'query, 'v, R, V, I, T, Pk, F, S>(
         &'life0 self,
         patches: I,

@@ -1,7 +1,6 @@
 #![allow(incomplete_features)]
 #![feature(
     associated_type_defaults,
-    const_type_name,
     return_position_impl_trait_in_trait,
     specialization,
     trait_alias

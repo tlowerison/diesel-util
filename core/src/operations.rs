@@ -90,7 +90,7 @@ pub trait DbEntity: Sized + Send + 'static {
 #[async_trait]
 pub trait DbGet: DbEntity {
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn get<'query, D, F>(
         db: &D,
         ids: impl IntoIterator<Item = Self::Id> + Send,
@@ -142,7 +142,7 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn get_one<'query, D, F>(
         db: &D,
         id: Self::Id,
@@ -195,7 +195,7 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn get_by_column<'query, D, C, U, Q>(
         db: &D,
         column: C,
@@ -239,7 +239,7 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn get_page<'query, D, P, F>(
         db: &D,
         page: P,
@@ -288,7 +288,7 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn get_pages<'query, D, P, F>(
         db: &D,
         pages: impl IntoIterator<Item = P> + Send,
@@ -358,7 +358,7 @@ pub trait DbInsert: DbEntity {
     type Post<'v>: Debug + HasTable<Table = Self::Table> + Send;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn insert<'query, 'v, D, Op>(
         db: &D,
         posts: impl IntoIterator<Item = Self::PostHelper<'v>> + Send + 'v,
@@ -433,7 +433,7 @@ pub trait DbInsert: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn insert_one<'query, 'v, D, Op>(
         db: &D,
         post: Self::PostHelper<'v>,
@@ -513,7 +513,7 @@ pub trait DbUpdate: DbEntity {
         + Sync;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn update<'query, 'v, D, F>(
         db: &D,
         patches: impl IntoIterator<Item = Self::PatchHelper<'v>> + Send + 'v,
@@ -607,7 +607,7 @@ pub trait DbUpdate: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn update_one<'query, 'v, D, F>(
         db: &D,
         patch: Self::PatchHelper<'v>,
@@ -692,7 +692,7 @@ pub trait DbDelete: DbEntity {
     type DeletePatch<'v>;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     async fn delete<'query, 'v, D, I>(
         db: &D,
         ids: I,

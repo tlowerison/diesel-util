@@ -682,7 +682,7 @@ pub trait DbDelete: DbEntity {
     where
         D: _Db + 'query,
 
-        I: Debug + IntoIterator<Item = Self::Id> + Send,
+        I: Debug + Send,
 
         // Id bounds
         Self::Id: Debug + Send,
@@ -694,7 +694,7 @@ pub trait DbDelete: DbEntity {
             'query,
             D::AsyncConnection,
             Self::Table,
-            Vec<Self::Id>,
+            I,
             Self::Id,
             Self::DeletedAt,
             Self::DeletePatch<'v>,
@@ -703,12 +703,6 @@ pub trait DbDelete: DbEntity {
     {
         #[cfg(feature = "tracing")]
         tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
-        let ids = ids.into_iter().collect::<Vec<_>>();
-
-        if ids.is_empty() {
-            return Ok(vec![]);
-        }
 
         db.raw_tx(move |conn| {
             async move {

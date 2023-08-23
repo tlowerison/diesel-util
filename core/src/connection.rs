@@ -27,9 +27,6 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-#[cfg(feature = "tracing")]
-use tracing::Instrument;
-
 pub trait IncludesChanges {
     fn includes_changes(&self) -> bool;
 }
@@ -198,29 +195,6 @@ impl<'a, AC, C> From<&'a DbConnection<AC, C>> for Cow<'a, DbConnection<AC, C>> {
 pub type InsertStmt<Table, T> =
     InsertStatement<Table, BatchInsert<Vec<<T as Insertable<Table>>::Values>, Table, (), false>>;
 
-macro_rules! instrument_err {
-    ($fut:expr) => {{
-        cfg_if! {
-            if #[cfg(feature = "tracing")] {
-                $fut.map_err(|err| {
-                    tracing::Span::current().record("error", &&*format!("{err:?}"));
-                    err
-                })
-                .instrument(tracing::Span::current())
-            } else {
-                $fut
-            }
-        }
-    }};
-}
-
-macro_rules! execute_query {
-    ($self:expr, $query:expr $(, $($result_ty_param:ty $(,)?)?)?) => {{
-        let query = $query;
-        instrument_err!($self.query(move |connection| Box::pin(query.get_results$($(::<$result_ty_param>)?)?(connection))))
-    }};
-}
-
 /// _Db represents a shared reference to a mutable async db connection
 /// It abstracts over the case where the connection is owned vs. a mutable reference.
 /// The main goal of this abstraction is to defer locking the access to the
@@ -278,7 +252,6 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn get<'life0, 'async_trait, 'query, R, T, Pk, F, I, S>(
         &'life0 self,
         ids: I,
@@ -312,25 +285,18 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let ids = ids.into_iter();
         if ids.len() == 0 {
             return Box::pin(ready(Ok(vec![])));
         }
-        execute_query!(
-            self,
-            R::table()
-                .select(selection)
-                .filter(R::table().primary_key().eq_any(ids))
-                .is_not_deleted(),
-        )
-        .boxed()
+        let query = R::table()
+            .select(selection)
+            .filter(R::table().primary_key().eq_any(ids))
+            .is_not_deleted();
+        self.query(move |conn| Box::pin(query.get_results(conn)))
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn get_by_column<'life0, 'async_trait, 'query, R, U, Q, C, S>(
         &'life0 self,
         c: C,
@@ -361,21 +327,14 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
-        execute_query!(
-            self,
-            R::table()
-                .select(selection)
-                .filter(c.eq_any(values.into_iter().collect::<Vec<_>>()))
-                .is_not_deleted(),
-        )
-        .boxed()
+        let query = R::table()
+            .select(selection)
+            .filter(c.eq_any(values.into_iter().collect::<Vec<_>>()))
+            .is_not_deleted();
+        self.query(move |conn| Box::pin(query.get_results(conn)))
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn get_page<'life0, 'async_trait, 'query, R, P, F, S>(
         &'life0 self,
         page: P,
@@ -410,25 +369,18 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         if page.borrow().is_empty() {
             return Box::pin(ready(Ok(vec![])));
         }
         let page = page.borrow().clone();
-        execute_query!(
-            self,
-            R::table().select(selection).is_not_deleted().paginate(page),
-            Paged<R>
-        )
-        .map_ok(|results| results.into_iter().map(|(r, _, _)| r).collect())
-        .boxed()
+        let query = R::table().select(selection).is_not_deleted().paginate(page);
+        self.query(move |conn| Box::pin(query.get_results::<Paged<R>>(conn)))
+            .map_ok(|results| results.into_iter().map(|(r, _, _)| r).collect())
+            .boxed()
     }
 
     #[allow(clippy::type_complexity)]
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn get_pages<'life0, 'async_trait, 'query, R, P, I, F, S>(
         &'life0 self,
         pages: I,
@@ -465,25 +417,18 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         S: 'async_trait,
         Self: 'life0,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let pages = pages.into_iter().map(|x| x.page_ref().clone()).collect::<Vec<_>>();
 
-        execute_query!(
-            self,
-            R::table()
-                .select(selection)
-                .is_not_deleted()
-                .multipaginate(pages.iter()),
-            Paged<R>
-        )
-        .map_ok(move |results| split_multipaginated_results(results, pages))
-        .boxed()
+        let query = R::table()
+            .select(selection)
+            .is_not_deleted()
+            .multipaginate(pages.iter());
+        self.query(move |conn| Box::pin(query.get_results::<Paged<R>>(conn)))
+            .map_ok(move |results| split_multipaginated_results(results, pages))
+            .boxed()
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn insert<'life0, 'async_trait, 'query, 'v, R, V, I, Op, S>(
         &'life0 self,
         values: I,
@@ -525,10 +470,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         I: 'async_trait + 'v,
         S: 'async_trait,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
-        instrument_err!(self.raw_tx(move |conn| {
+        self.raw_tx(move |conn| {
             let values = values.into_iter().collect::<Vec<_>>();
             if values.is_empty() {
                 return Box::pin(ready(Ok(vec![])));
@@ -547,12 +489,11 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                 Ok(all_inserted)
             }
             .scope_boxed()
-        }))
+        })
         .boxed()
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
     fn update<'life0, 'async_trait, 'query, 'v, R, V, I, T, Pk, F, S>(
         &'life0 self,
         patches: I,
@@ -615,9 +556,6 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         F: 'async_trait,
         S: 'async_trait,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let patches = patches.into_iter().collect::<Vec<V>>();
         let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
         let no_change_patch_ids = patches
@@ -633,7 +571,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             )
             .collect::<Vec<_>>();
 
-        instrument_err!(self.raw_tx(move |conn| {
+        self.raw_tx(move |conn| {
             async move {
                 let num_changed_patches = ids.len() - no_change_patch_ids.len();
                 if num_changed_patches == 0 {
@@ -667,7 +605,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
                 Ok(ids.iter().filter_map(|id| all_records.remove(id)).collect::<Vec<_>>())
             }
             .scope_boxed()
-        }))
+        })
         .boxed()
     }
 }

@@ -90,7 +90,7 @@ pub trait DbEntity: Sized + Send + 'static {
 #[async_trait]
 pub trait DbGet: DbEntity {
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self, ids), skip(db)))]
     async fn get<'query, D, F>(
         db: &D,
         ids: impl IntoIterator<Item = Self::Id> + Send,
@@ -119,9 +119,6 @@ pub trait DbGet: DbEntity {
 
         let ids = ids.into_iter().collect::<Vec<_>>();
 
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("ids", &*format!("{ids:?}"));
-
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -142,7 +139,7 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
     async fn get_one<'query, D, F>(
         db: &D,
         id: Self::Id,
@@ -156,14 +153,6 @@ pub trait DbGet: DbEntity {
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
 
-        // Self::Table: FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, [Self::Id; 1]>, Output = F>,
-        // F: IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>,
-        // <F as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
-        //     SelectDsl<Self::Selection>,
-        // ht::Select<
-        //     <F as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter,
-        //     Self::Selection,
-        // >: LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
         ht::Select<Self::Table, Self::Selection>:
             FilterDsl<ht::EqAny<<Self::Table as Table>::PrimaryKey, [Self::Id; 1]>, Output = F>,
 
@@ -195,11 +184,11 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self, values), skip(db)))]
     async fn get_by_column<'query, D, C, U, Q>(
         db: &D,
         column: C,
-        values: impl IntoIterator<Item = U> + Send,
+        values: impl Debug + IntoIterator<Item = U> + Send,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
@@ -220,8 +209,9 @@ pub trait DbGet: DbEntity {
 
         let values = values.into_iter().collect::<Vec<_>>();
 
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("values", &*format!("{values:?}"));
+        if values.is_empty() {
+            return Ok(vec![]);
+        }
 
         let result: Result<Vec<Self::Raw>, _> = db.get_by_column(column, values, Self::selection()).await;
         match result {
@@ -239,7 +229,7 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
     async fn get_page<'query, D, P, F>(
         db: &D,
         page: P,
@@ -272,6 +262,7 @@ pub trait DbGet: DbEntity {
         if page.borrow().is_empty() {
             return Ok(vec![]);
         }
+
         let result: Result<Vec<Self::Raw>, _> = db.get_page(page, Self::selection()).await;
         match result {
             Ok(records) => Ok(records
@@ -288,10 +279,10 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
     async fn get_pages<'query, D, P, F>(
         db: &D,
-        pages: impl IntoIterator<Item = P> + Send,
+        pages: impl Debug + IntoIterator<Item = P> + Send,
     ) -> Result<HashMap<DbPage<Self::Table>, Vec<Self>>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
@@ -321,9 +312,6 @@ pub trait DbGet: DbEntity {
         tracing::Span::current().record("Self", std::any::type_name::<Self>());
 
         let pages = pages.into_iter().collect::<Vec<_>>();
-
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("pages", &*format!("{pages:?}"));
 
         if pages.iter().all(|page| page.borrow().is_empty()) {
             return Ok(Default::default());
@@ -358,10 +346,10 @@ pub trait DbInsert: DbEntity {
     type Post<'v>: Debug + HasTable<Table = Self::Table> + Send;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
     async fn insert<'query, 'v, D, Op>(
         db: &D,
-        posts: impl IntoIterator<Item = Self::PostHelper<'v>> + Send + 'v,
+        posts: impl Debug + IntoIterator<Item = Self::PostHelper<'v>> + Send + 'v,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db + 'query,
@@ -402,9 +390,6 @@ pub trait DbInsert: DbEntity {
 
         let db_post_helpers = posts.into_iter().collect::<Vec<_>>();
 
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("posts", &*format!("{db_post_helpers:?}"));
-
         if db_post_helpers.is_empty() {
             return Ok(vec![]);
         }
@@ -433,7 +418,7 @@ pub trait DbInsert: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
     async fn insert_one<'query, 'v, D, Op>(
         db: &D,
         post: Self::PostHelper<'v>,
@@ -476,9 +461,6 @@ pub trait DbInsert: DbEntity {
         #[cfg(feature = "tracing")]
         tracing::Span::current().record("Self", std::any::type_name::<Self>());
 
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("post", &*format!("{post:?}"));
-
         db.insert([post.into()], Self::selection())
             .map(|result| match result {
                 Ok(record) => Ok(record),
@@ -513,10 +495,10 @@ pub trait DbUpdate: DbEntity {
         + Sync;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
     async fn update<'query, 'v, D, F>(
         db: &D,
-        patches: impl IntoIterator<Item = Self::PatchHelper<'v>> + Send + 'v,
+        patches: impl Debug + IntoIterator<Item = Self::PatchHelper<'v>> + Send + 'v,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db + 'query,
@@ -573,10 +555,10 @@ pub trait DbUpdate: DbEntity {
             Output = diesel::expression::is_aggregate::No,
         >,
     {
-        let db_patch_helpers = patches.into_iter().collect::<Vec<_>>();
-
         #[cfg(feature = "tracing")]
-        tracing::Span::current().record("patches", &*format!("{db_patch_helpers:?}"));
+        tracing::Span::current().record("Self", std::any::type_name::<Self>());
+
+        let db_patch_helpers = patches.into_iter().collect::<Vec<_>>();
 
         if db_patch_helpers.is_empty() {
             return Ok(vec![]);
@@ -607,7 +589,7 @@ pub trait DbUpdate: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
     async fn update_one<'query, 'v, D, F>(
         db: &D,
         patch: Self::PatchHelper<'v>,
@@ -668,7 +650,7 @@ pub trait DbUpdate: DbEntity {
         >,
     {
         #[cfg(feature = "tracing")]
-        tracing::Span::current().record("patch", &*format!("{patch:?}"));
+        tracing::Span::current().record("Self", std::any::type_name::<Self>());
 
         db.update([patch.into()], Self::selection())
             .map(|result| match result {
@@ -692,7 +674,7 @@ pub trait DbDelete: DbEntity {
     type DeletePatch<'v>;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
     async fn delete<'query, 'v, D, I>(
         db: &D,
         ids: I,
@@ -700,7 +682,7 @@ pub trait DbDelete: DbEntity {
     where
         D: _Db + 'query,
 
-        I: Send,
+        I: Debug + IntoIterator<Item = Self::Id> + Send,
 
         // Id bounds
         Self::Id: Debug + Send,
@@ -712,7 +694,7 @@ pub trait DbDelete: DbEntity {
             'query,
             D::AsyncConnection,
             Self::Table,
-            I,
+            Vec<Self::Id>,
             Self::Id,
             Self::DeletedAt,
             Self::DeletePatch<'v>,
@@ -721,6 +703,12 @@ pub trait DbDelete: DbEntity {
     {
         #[cfg(feature = "tracing")]
         tracing::Span::current().record("Self", std::any::type_name::<Self>());
+
+        let ids = ids.into_iter().collect::<Vec<_>>();
+
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
 
         db.raw_tx(move |conn| {
             async move {

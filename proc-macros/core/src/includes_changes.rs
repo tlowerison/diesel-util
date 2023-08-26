@@ -15,7 +15,12 @@ pub fn derive_includes_changes(tokens: TokenStream) -> Result<TokenStream, Error
                 .iter()
                 .map(|field| field.ident.as_ref().unwrap().clone())
                 .collect(),
-            _ => panic!("IncludesChanges can only be derived on struct data types with named fields at this time."),
+            syn::Fields::Unnamed(fields_unnamed) => fields_unnamed
+                .unnamed
+                .iter()
+                .map(|field| field.ident.as_ref().unwrap().clone())
+                .collect(),
+            syn::Fields::Unit => vec![],
         },
         _ => panic!("IncludesChanges can only be derived on struct data types at this time."),
     };
@@ -47,8 +52,9 @@ pub fn derive_includes_changes(tokens: TokenStream) -> Result<TokenStream, Error
                 .into_iter()
                 .filter_map(|field| match &field.ty {
                     syn::Type::Path(syn::TypePath { path, .. }) => {
-                        if path.is_ident("Option") {
-                            Some(field.ident.unwrap())
+                        if &path.segments[0].ident == "Option" {
+                            let ident = field.ident.unwrap();
+                            Some(quote!(#ident))
                         } else {
                             None
                         }
@@ -56,12 +62,29 @@ pub fn derive_includes_changes(tokens: TokenStream) -> Result<TokenStream, Error
                     _ => None,
                 })
                 .collect(),
-            _ => panic!("IncludesChanges can only be derived on struct data types with named fields at this time."),
+            syn::Fields::Unnamed(fields_unnamed) => fields_unnamed
+                .unnamed
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, field)| match &field.ty {
+                    syn::Type::Path(syn::TypePath { path, .. }) => {
+                        if &path.segments[0].ident == "Option" {
+                            Some(format!("{i}").parse().unwrap())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                })
+                .collect(),
+            syn::Fields::Unit => vec![],
         },
         _ => panic!("IncludesChanges can only be derived on struct data types at this time."),
     };
 
-    let expr = if opt_field_names.is_empty() || opt_field_names.len() < field_names.len() {
+    let expr = if field_names.is_empty() {
+        quote! { false }
+    } else if opt_field_names.is_empty() {
         quote! { true }
     } else {
         quote! {
@@ -74,7 +97,7 @@ pub fn derive_includes_changes(tokens: TokenStream) -> Result<TokenStream, Error
     let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
 
     let tokens = quote! {
-        impl #impl_generics diesel_util::IncludesChanges for #ident #ty_generics #where_clause {
+        impl #impl_generics ::diesel_util::IncludesChanges for #ident #ty_generics #where_clause {
             fn includes_changes(&self) -> bool {
                 #expr
             }
@@ -82,4 +105,35 @@ pub fn derive_includes_changes(tokens: TokenStream) -> Result<TokenStream, Error
     };
 
     Ok(tokens)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test() -> Result<(), Error> {
+        assert_eq!(
+            derive_includes_changes(quote!(
+                #[derive(IncludesChanges)]
+                pub struct DbFoo {
+                    pub id: Uuid,
+                    pub a: Option<i32>,
+                    pub b: Option<bool>,
+                    pub c: Option<String>,
+                }
+            ))?
+            .to_string(),
+            quote!(
+                impl ::diesel_util::IncludesChanges for DbFoo {
+                    fn includes_changes(&self) -> bool {
+                        self.a.is_some() || self.b.is_some() || self.c.is_some()
+                    }
+                }
+            )
+            .to_string(),
+        );
+
+        Ok(())
+    }
 }

@@ -519,7 +519,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
             ReturningClause<S>,
         >: AsQuery + LoadQuery<'query, Self::AsyncConnection, R> + Send,
 
-        Pk: AsExpression<SqlTypeOf<<T as Table>::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
+        Pk: AsExpression<SqlTypeOf<<T as Table>::PrimaryKey>> + Clone + Debug + Hash + Eq + Send + Sync,
 
         T: FindDsl<Pk> + SelectDsl<S> + Send + Sync + Table + 'query,
         ht::Find<T, Pk>: HasTable<Table = T> + Send,
@@ -528,7 +528,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
         <<T as Table>::PrimaryKey as Expression>::SqlType: Send,
 
         I: IntoIterator<Item = V> + Send,
-        R: Send,
+        R: Send + Debug,
         for<'a> &'a R: Identifiable<Id = &'a Pk>,
 
         R: MaybeAudit<'query, Self::AsyncConnection>,
@@ -558,6 +558,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
     {
         let patches = patches.into_iter().collect::<Vec<V>>();
         let ids = patches.iter().map(|patch| patch.id().clone()).collect::<Vec<_>>();
+
         let no_change_patch_ids = patches
             .iter()
             .filter_map(
@@ -573,21 +574,24 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         self.raw_tx(move |conn| {
             async move {
-                let num_changed_patches = ids.len() - no_change_patch_ids.len();
-                if num_changed_patches == 0 {
+                if ids.len() == 0 {
                     return Ok(vec![]);
                 }
-                let mut all_updated = Vec::with_capacity(num_changed_patches);
-                for patch in patches.into_iter().filter(|patch| patch.includes_changes()) {
-                    let record = diesel::update(V::table().find(patch.id().to_owned()))
-                        .set(patch)
-                        .returning(selection.clone())
-                        .get_result::<R>(conn)
-                        .await?;
-                    all_updated.push(record);
-                }
 
-                R::maybe_insert_audit_records(conn, &all_updated).await?;
+                let num_changed_patches = ids.len() - no_change_patch_ids.len();
+                let mut all_updated = Vec::with_capacity(num_changed_patches);
+
+                if num_changed_patches > 0 {
+                    for patch in patches.into_iter().filter(|patch| patch.includes_changes()) {
+                        let record = diesel::update(V::table().find(patch.id().to_owned()))
+                            .set(patch)
+                            .returning(selection.clone())
+                            .get_result::<R>(conn)
+                            .await?;
+                        all_updated.push(record);
+                    }
+                    R::maybe_insert_audit_records(conn, &all_updated).await?;
+                }
 
                 let unchanged_records = V::table()
                     .select(selection)

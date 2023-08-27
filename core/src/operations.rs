@@ -62,9 +62,9 @@ impl From<DbEntityError<std::convert::Infallible>> for diesel::result::Error {
     }
 }
 
-pub trait DbEntity: Sized + Send + 'static {
+pub trait DbEntity: Debug + Sized + Send + 'static {
     /// an equivalent representation of this entity which has diesel trait implementations
-    type Raw: HasTable<Table = Self::Table> + TryInto<Self> + Send + 'static;
+    type Raw: Debug + HasTable<Table = Self::Table> + TryInto<Self> + Send + 'static;
 
     /// the table this entity represents
     type Table: Table + QueryId + SelectDsl<Self::Selection> + Send + Sync;
@@ -72,7 +72,7 @@ pub trait DbEntity: Sized + Send + 'static {
     /// the type of this entity's table's primary key
     /// note that this type should be equivalent diesel sql_type representation of
     /// the type of the primary key field in Self::Raw
-    type Id: AsExpression<SqlTypeOf<<Self::Table as Table>::PrimaryKey>>
+    type Id: AsExpression<SqlTypeOf<<Self::Table as Table>::PrimaryKey>> + Clone + Debug + Eq + Hash + Send + Sync
     where
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType;
 
@@ -90,16 +90,32 @@ pub trait DbEntity: Sized + Send + 'static {
 #[async_trait]
 pub trait DbGet: DbEntity {
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self, ids), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn get<'query, D, F>(
         db: &D,
-        ids: impl IntoIterator<Item = Self::Id> + Send,
+        ids: impl IntoIterator<Item = Self::Id> + Debug + Send,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
 
         // Id bounds
-        Self::Id: Debug + Send,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
@@ -114,9 +130,6 @@ pub trait DbGet: DbEntity {
         <F as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
             LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let ids = ids.into_iter().collect::<Vec<_>>();
 
         if ids.is_empty() {
@@ -139,16 +152,32 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn get_one<'query, D, F>(
         db: &D,
         id: Self::Id,
     ) -> Result<Self, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
 
         // Id bounds
-        Self::Id: Debug + Send,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
@@ -163,9 +192,6 @@ pub trait DbGet: DbEntity {
         <F as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
             LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let result: Result<Vec<Self::Raw>, _> = db.get([id], Self::selection()).await;
         match result {
             Ok(records) => Ok(records
@@ -184,7 +210,22 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self, values), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn get_by_column<'query, D, C, U, Q>(
         db: &D,
         column: C,
@@ -192,6 +233,8 @@ pub trait DbGet: DbEntity {
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
 
         // Id bounds
         U: AsExpression<SqlTypeOf<C>> + Debug + Send,
@@ -204,9 +247,6 @@ pub trait DbGet: DbEntity {
         <Q as IsNotDeleted<'query, D::AsyncConnection, Self::Raw, Self::Raw>>::IsNotDeletedFilter:
             LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let values = values.into_iter().collect::<Vec<_>>();
 
         if values.is_empty() {
@@ -229,13 +269,30 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn get_page<'query, D, P, F>(
         db: &D,
         page: P,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
 
         // DbPage bounds
         P: Borrow<DbPage<Self::Table>> + Debug + Send,
@@ -256,9 +313,6 @@ pub trait DbGet: DbEntity {
 
         Self::Selection: 'query,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         if page.borrow().is_empty() {
             return Ok(vec![]);
         }
@@ -279,13 +333,30 @@ pub trait DbGet: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn get_pages<'query, D, P, F>(
         db: &D,
         pages: impl Debug + IntoIterator<Item = P> + Send,
     ) -> Result<HashMap<DbPage<Self::Table>, Vec<Self>>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
 
         // DbPage bounds
         P: Borrow<DbPage<Self::Table>> + Debug + for<'a> DbPageRef<'a, Self::Table> + Send,
@@ -308,9 +379,6 @@ pub trait DbGet: DbEntity {
 
         Self::Selection: 'query,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let pages = pages.into_iter().collect::<Vec<_>>();
 
         if pages.iter().all(|page| page.borrow().is_empty()) {
@@ -346,7 +414,22 @@ pub trait DbInsert: DbEntity {
     type Post<'v>: Debug + HasTable<Table = Self::Table> + Send;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn insert<'query, 'v, D, Op>(
         db: &D,
         posts: impl Debug + IntoIterator<Item = Self::PostHelper<'v>> + Send + 'v,
@@ -354,8 +437,8 @@ pub trait DbInsert: DbEntity {
     where
         D: _Db + 'query,
         'v: 'query,
-
-        <Self::Raw as TryInto<Self>>::Error: Send,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug + Send,
 
         <Self::Table as QuerySource>::FromClause: Send,
 
@@ -385,9 +468,6 @@ pub trait DbInsert: DbEntity {
             Output = diesel::expression::is_aggregate::No,
         >,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let db_post_helpers = posts.into_iter().collect::<Vec<_>>();
 
         if db_post_helpers.is_empty() {
@@ -418,7 +498,22 @@ pub trait DbInsert: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn insert_one<'query, 'v, D, Op>(
         db: &D,
         post: Self::PostHelper<'v>,
@@ -426,8 +521,8 @@ pub trait DbInsert: DbEntity {
     where
         D: _Db + 'query,
         'v: 'query,
-
-        <Self::Raw as TryInto<Self>>::Error: Send,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug + Send,
 
         <Self::Table as QuerySource>::FromClause: Send,
 
@@ -458,9 +553,6 @@ pub trait DbInsert: DbEntity {
             Output = diesel::expression::is_aggregate::No,
         >,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         db.insert([post.into()], Self::selection())
             .map(|result| match result {
                 Ok(record) => Ok(record),
@@ -495,7 +587,22 @@ pub trait DbUpdate: DbEntity {
         + Sync;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn update<'query, 'v, D, F>(
         db: &D,
         patches: impl Debug + IntoIterator<Item = Self::PatchHelper<'v>> + Send + 'v,
@@ -503,9 +610,10 @@ pub trait DbUpdate: DbEntity {
     where
         D: _Db + 'query,
         'v: 'query,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
 
         // Id bounds
-        Self::Id: Clone + Hash + Eq + Send + Sync,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods + Send + Sync,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
@@ -532,8 +640,6 @@ pub trait DbUpdate: DbEntity {
             ReturningClause<Self::Selection>,
         >: AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
 
-        Self::Id: AsExpression<SqlTypeOf<<Self::Table as Table>::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
-
         Self::Table: FindDsl<Self::Id> + SelectDsl<Self::Selection> + Send + Sync + Table + 'query,
         ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + Send,
         <Self::Table as QuerySource>::FromClause: Send,
@@ -555,9 +661,6 @@ pub trait DbUpdate: DbEntity {
             Output = diesel::expression::is_aggregate::No,
         >,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         let db_patch_helpers = patches.into_iter().collect::<Vec<_>>();
 
         if db_patch_helpers.is_empty() {
@@ -589,7 +692,22 @@ pub trait DbUpdate: DbEntity {
     }
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn update_one<'query, 'v, D, F>(
         db: &D,
         patch: Self::PatchHelper<'v>,
@@ -597,9 +715,10 @@ pub trait DbUpdate: DbEntity {
     where
         D: _Db + 'query,
         'v: 'query,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
 
         // Id bounds
-        Self::Id: Clone + Hash + Eq + Send + Sync,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods + Send + Sync,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
@@ -626,8 +745,6 @@ pub trait DbUpdate: DbEntity {
             ReturningClause<Self::Selection>,
         >: AsQuery + LoadQuery<'query, D::AsyncConnection, Self::Raw> + Send,
 
-        Self::Id: AsExpression<SqlTypeOf<<Self::Table as Table>::PrimaryKey>> + Clone + Hash + Eq + Send + Sync,
-
         Self::Table: FindDsl<Self::Id> + SelectDsl<Self::Selection> + Send + Sync + Table + 'query,
         ht::Find<Self::Table, Self::Id>: HasTable<Table = Self::Table> + Send,
         <Self::Table as QuerySource>::FromClause: Send,
@@ -649,9 +766,6 @@ pub trait DbUpdate: DbEntity {
             Output = diesel::expression::is_aggregate::No,
         >,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         db.update([patch.into()], Self::selection())
             .map(|result| match result {
                 Ok(mut records) => Ok(records.pop().ok_or(diesel::result::Error::NotFound)?),
@@ -674,18 +788,34 @@ pub trait DbDelete: DbEntity {
     type DeletePatch<'v>;
 
     #[framed]
-    #[cfg_attr(feature = "tracing", instrument(fields(Self), skip(db)))]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
     async fn delete<'query, 'v, D, I>(
         db: &D,
         ids: I,
     ) -> Result<Vec<Self>, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
     where
         D: _Db + 'query,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
 
         I: Debug + Send,
 
         // Id bounds
-        Self::Id: Debug + Send,
         for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
         <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
         <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
@@ -701,9 +831,6 @@ pub trait DbDelete: DbEntity {
             Self::Selection,
         >,
     {
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("Self", std::any::type_name::<Self>());
-
         db.raw_tx(move |conn| {
             async move {
                 match Self::Raw::maybe_soft_delete(conn, ids, Self::selection()).await {

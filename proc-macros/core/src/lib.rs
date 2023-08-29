@@ -10,6 +10,7 @@ mod dynamic_schema;
 mod r#enum;
 mod filter;
 mod includes_changes;
+mod reassignment;
 mod soft_delete;
 mod util;
 
@@ -20,4 +21,5 @@ pub use dynamic_schema::*;
 pub use filter::*;
 pub use includes_changes::*;
 pub use r#enum::*;
+pub use reassignment::*;
 pub use soft_delete::*;

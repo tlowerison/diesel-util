@@ -51,6 +51,7 @@ mod is_deleted;
 mod macros;
 mod operations;
 mod paginate;
+mod reassignment;
 mod schema;
 
 pub use audit::*;
@@ -60,6 +61,7 @@ pub use is_deleted::*;
 pub use macros::*;
 pub use operations::*;
 pub use paginate::*;
+pub use reassignment::*;
 pub use schema::*;
 
 cfg_if! {

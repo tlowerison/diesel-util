@@ -42,6 +42,14 @@ pub fn derive_includes_changes(tokens: TokenStream) -> TokenStream {
     }
 }
 
+#[proc_macro_derive(Reassignment, attributes(child_id, parent_id))]
+pub fn derive_reassignment(tokens: TokenStream) -> TokenStream {
+    match core::derive_reassignment(tokens.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
 #[proc_macro_derive(SoftDelete)]
 pub fn derive_soft_delete(tokens: TokenStream) -> TokenStream {
     match core::derive_soft_delete(tokens.into()) {

@@ -1,8 +1,51 @@
-pub trait Reassignment {
+use diesel::helper_types::{EqAny, Filter};
+use diesel::query_builder::{AsQuery, IntoUpdateTarget, UpdateStatement};
+use diesel::query_dsl::methods::FilterDsl;
+use diesel::sql_types::SqlType;
+use diesel::{AsChangeset, Column, Expression, ExpressionMethods, Identifiable};
+
+pub trait Reassignment: Sized {
     type ParentId;
     type ChildId;
     fn parent_id(&self) -> &Self::ParentId;
     fn child_id(&self) -> &Self::ChildId;
+
+    fn update<'a, C, P>(
+        child_column: C,
+        parent_column: P,
+        reassignments: &'a [Self],
+    ) -> Filter<
+        UpdateStatement<
+            C::Table,
+            <C::Table as IntoUpdateTarget>::WhereClause,
+            <SetReassignment<'a, C, P, Self> as AsChangeset>::Changeset,
+        >,
+        EqAny<C, Vec<&'a Self::ChildId>>,
+    >
+    where
+        C: Clone + Column<SqlType = <Self::ChildId as Expression>::SqlType> + ExpressionMethods,
+        P: Column,
+        C::Table: Default + Identifiable + IntoUpdateTarget<Table = C::Table>,
+        C::SqlType: SqlType,
+        Self::ChildId: Expression,
+        <Self::ChildId as Expression>::SqlType: SqlType,
+        Vec<&'a Self::ChildId>: Expression,
+        UpdateStatement<
+            C::Table,
+            <C::Table as IntoUpdateTarget>::WhereClause,
+            <SetReassignment<'a, C, P, Self> as AsChangeset>::Changeset,
+        >: AsQuery + FilterDsl<EqAny<C, Vec<&'a Self::ChildId>>>,
+    {
+        let child_ids = reassignments.iter().map(|x| x.child_id()).collect::<Vec<_>>();
+
+        diesel::update(C::Table::default())
+            .set(SetReassignment {
+                child: child_column.clone(),
+                parent: parent_column,
+                reassignments,
+            })
+            .filter(child_column.eq_any(child_ids))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -22,10 +65,10 @@ impl<'a, C, P, R> SetReassignment<'a, C, P, R> {
     }
 }
 
-impl<C, P, R> diesel::query_builder::AsChangeset for SetReassignment<'_, C, P, R>
+impl<C, P, R> AsChangeset for SetReassignment<'_, C, P, R>
 where
-    C: diesel::Column,
-    P: diesel::Column,
+    C: Column,
+    P: Column,
     R: Reassignment,
 {
     type Target = C::Table;

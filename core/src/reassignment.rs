@@ -1,50 +1,35 @@
-use diesel::helper_types::{EqAny, Filter};
+use diesel::expression::AsExpression;
+use diesel::helper_types::EqAny;
 use diesel::query_builder::{AsQuery, IntoUpdateTarget, UpdateStatement};
 use diesel::query_dsl::methods::FilterDsl;
 use diesel::sql_types::SqlType;
-use diesel::{AsChangeset, Column, Expression, ExpressionMethods, Identifiable};
+use diesel::{AsChangeset, Column, ExpressionMethods};
 
 pub trait Reassignment: Sized {
     type ParentId;
-    type ChildId;
+    type ChildId: Clone;
     fn parent_id(&self) -> &Self::ParentId;
     fn child_id(&self) -> &Self::ChildId;
 
-    fn update<'a, C, P>(
-        child_column: C,
-        parent_column: P,
-        reassignments: &'a [Self],
-    ) -> Filter<
-        UpdateStatement<
-            C::Table,
-            <C::Table as IntoUpdateTarget>::WhereClause,
-            <SetReassignment<'a, C, P, Self> as AsChangeset>::Changeset,
-        >,
-        EqAny<C, Vec<&'a Self::ChildId>>,
-    >
+    #[allow(unused_variables)]
+    fn update<'a, C, P, F>(child_column: C, parent_column: P, reassignments: &'a [Self]) -> F
     where
-        C: Clone + Column<SqlType = <Self::ChildId as Expression>::SqlType> + ExpressionMethods,
+        C: Column + Default + ExpressionMethods,
         P: Column,
-        C::Table: Default + Identifiable + IntoUpdateTarget<Table = C::Table>,
+        C::Table: Default + IntoUpdateTarget<Table = C::Table>,
         C::SqlType: SqlType,
-        Self::ChildId: Expression,
-        <Self::ChildId as Expression>::SqlType: SqlType,
-        Vec<&'a Self::ChildId>: Expression,
-        UpdateStatement<
-            C::Table,
-            <C::Table as IntoUpdateTarget>::WhereClause,
-            <SetReassignment<'a, C, P, Self> as AsChangeset>::Changeset,
-        >: AsQuery + FilterDsl<EqAny<C, Vec<&'a Self::ChildId>>>,
+        &'a Self::ChildId: AsExpression<C::SqlType>,
+        UpdateStatement<C::Table, <C::Table as IntoUpdateTarget>::WhereClause, SetReassignment<'a, C, P, Self>>:
+            AsQuery + FilterDsl<EqAny<C, Vec<&'a Self::ChildId>>, Output = F>,
     {
         let child_ids = reassignments.iter().map(|x| x.child_id()).collect::<Vec<_>>();
-
         diesel::update(C::Table::default())
             .set(SetReassignment {
-                child: child_column.clone(),
+                child: C::default(),
                 parent: parent_column,
                 reassignments,
             })
-            .filter(child_column.eq_any(child_ids))
+            .filter(C::default().eq_any(child_ids))
     }
 }
 

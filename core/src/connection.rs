@@ -574,7 +574,7 @@ pub trait _Db: Clone + Debug + Send + Sync + Sized {
 
         self.raw_tx(move |conn| {
             async move {
-                if ids.len() == 0 {
+                if ids.is_empty() {
                     return Ok(vec![]);
                 }
 

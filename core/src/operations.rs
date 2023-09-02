@@ -859,6 +859,73 @@ pub trait DbDelete: DbEntity {
                 .map_err(DbEntityError::conversion)
         })
     }
+
+    #[framed]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", not(feature = "tracing-ret")),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db))
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", not(feature = "tracing-args"), feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip_all, ret)
+    )]
+    #[cfg_attr(
+        all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
+        instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
+    )]
+    async fn delete_one<'query, 'v, D, I>(
+        db: &D,
+        id: Self::Id,
+    ) -> Result<Self, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
+    where
+        D: _Db + 'query,
+        Self::Raw: TryInto<Self>,
+        <Self::Raw as TryInto<Self>>::Error: Debug,
+
+        // Id bounds
+        for<'a> &'a Self::Raw: Identifiable<Id = &'a Self::Id>,
+        <Self::Table as Table>::PrimaryKey: Expression + ExpressionMethods,
+        <<Self::Table as Table>::PrimaryKey as Expression>::SqlType: SqlType,
+
+        Self::Raw: Deletable<
+            'query,
+            D::AsyncConnection,
+            Self::Table,
+            [Self::Id; 1],
+            Self::Id,
+            Self::DeletedAt,
+            Self::DeletePatch<'v>,
+            Self::Selection,
+        >,
+    {
+        db.raw_tx(move |conn| {
+            async move {
+                match Self::Raw::maybe_soft_delete(conn, [id], Self::selection()).await {
+                    Either::Left(ids) => Self::Raw::hard_delete(conn, ids, Self::selection()).await,
+                    Either::Right(result) => result,
+                }
+            }
+            .scope_boxed()
+        })
+        .map(|result| match result {
+            Ok(records) => Ok(records),
+            Err(err) => {
+                let err = err;
+                #[cfg(feature = "tracing")]
+                error!(target: module_path!(), error = %err);
+                Err(err)
+            }
+        })
+        .await
+        .map_err(DbEntityError::from)
+        .and_then(|mut records| {
+            TryInto::try_into(records.pop().expect("expected a deleted record")).map_err(DbEntityError::conversion)
+        })
+    }
 }
 
 impl<T: DbEntity> DbGet for T {}

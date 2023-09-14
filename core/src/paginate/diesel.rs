@@ -91,8 +91,8 @@ where
 
             for page_cursor in page_cursors.iter() {
                 let query: Q0 = query.clone();
-                let query: Q1 = query.filter(clone_box(&*page_cursor.column_cursor_comparison_expression));
-                let query: Q2 = query.order(clone_box(&*page_cursor.column_order_by_expression));
+                let query: Q1 = query.filter(clone_box(&*page_cursor.column.cursor_comparison_expression));
+                let query: Q2 = query.order(clone_box(&*page_cursor.column.order_by_expression));
                 cursor_queries.push(query);
             }
         }
@@ -131,8 +131,8 @@ where
         let mut cursor_queries = Vec::<Q2>::default();
         for page_cursor in page_cursors.iter() {
             let query: Q0 = query.clone();
-            let query: Q1 = query.filter(clone_box(&*page_cursor.column_cursor_comparison_expression));
-            let query: Q2 = query.order(clone_box(&*page_cursor.column_order_by_expression));
+            let query: Q1 = query.filter(clone_box(&*page_cursor.column.cursor_comparison_expression));
+            let query: Q2 = query.order(clone_box(&*page_cursor.column.order_by_expression));
             cursor_queries.push(query);
         }
 

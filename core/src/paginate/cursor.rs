@@ -1,11 +1,16 @@
 use crate::paginate::DbPageExt;
+use ::diesel::dsl::{self, And, IsNotNull, Or};
+use ::diesel::expression::{is_aggregate::No, AsExpression, ValidGrouping};
+use ::diesel::expression_methods::NullableExpressionMethods;
+use ::diesel::helper_types::{Gt, GtEq, Lt, LtEq};
+use ::diesel::sql_types::is_nullable::{IsNullable, NotNull};
+use ::diesel::sql_types::BoolOrNullableBool;
+use ::diesel::sql_types::MaybeNullableType;
+use ::diesel::sql_types::OneIsNullable;
+use ::diesel::sql_types::{Bool, Nullable, SingleValue, SqlType};
+use ::diesel::{AppearsOnTable, BoolExpressionMethods, Column, Expression, ExpressionMethods, QuerySource};
 use chrono::NaiveDateTime;
 use diesel::expression::expression_types::NotSelectable;
-use diesel::expression::is_aggregate::No;
-use diesel::expression::{AsExpression, ValidGrouping};
-use diesel::expression_methods::NullableExpressionMethods;
-use diesel::sql_types::{Bool, Nullable, SingleValue};
-use diesel::{helper_types, AppearsOnTable, Column, Expression, ExpressionMethods};
 use dyn_clone::DynClone;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -88,20 +93,26 @@ pub enum CursorDirection {
 pub struct DbPageCursor<QS: ?Sized> {
     pub count: i64,
     pub cursor: NaiveDateTime,
+    pub column: DbPageCursorColumn<QS>,
     #[derivative(Hash = "ignore")]
     #[derivative(PartialEq = "ignore")]
     pub(crate) id: Uuid,
-    pub(crate) column_name: &'static str,
     pub(crate) direction: CursorDirection,
     pub(crate) is_comparator_inclusive: bool,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug(bound = ""), Eq(bound = ""), Hash(bound = ""), PartialEq(bound = ""))]
+pub struct DbPageCursorColumn<QS: ?Sized> {
+    pub name: &'static str,
     #[derivative(Debug = "ignore")]
     #[derivative(Hash = "ignore")]
     #[derivative(PartialEq = "ignore")]
-    pub(crate) column_cursor_comparison_expression: Box<dyn ColumnCursorComparisonExpression<QS>>,
+    pub(crate) cursor_comparison_expression: Box<dyn ColumnCursorComparisonExpression<QS>>,
     #[derivative(Debug = "ignore")]
     #[derivative(Hash = "ignore")]
     #[derivative(PartialEq = "ignore")]
-    pub(crate) column_order_by_expression: Box<dyn ColumnOrderByExpression<QS>>,
+    pub(crate) order_by_expression: Box<dyn ColumnOrderByExpression<QS>>,
 }
 
 pub trait DbPageFrom<T> {
@@ -114,11 +125,13 @@ impl<QS: ?Sized> Clone for DbPageCursor<QS> {
             count: self.count,
             cursor: self.cursor,
             id: self.id,
-            column_name: self.column_name,
             direction: self.direction,
             is_comparator_inclusive: self.is_comparator_inclusive,
-            column_cursor_comparison_expression: dyn_clone::clone_box(&*self.column_cursor_comparison_expression),
-            column_order_by_expression: dyn_clone::clone_box(&*self.column_order_by_expression),
+            column: DbPageCursorColumn {
+                name: self.column.name,
+                cursor_comparison_expression: dyn_clone::clone_box(&*self.column.cursor_comparison_expression),
+                order_by_expression: dyn_clone::clone_box(&*self.column.order_by_expression),
+            },
         }
     }
 }
@@ -136,12 +149,12 @@ pub trait ColumnCursorComparisonExpression<QS: ?Sized>:
 }
 
 pub trait ColumnOrderByExpression<QS: ?Sized>:
-    AppearsOnTable<QS> + DynClone + Expression<SqlType = NotSelectable> + QF + Send + Sync + 'static
+    AppearsOnTable<QS> + DynClone + Expression<SqlType = (NotSelectable, NotSelectable)> + QF + Send + Sync + 'static
 {
 }
 
 impl<
-        QS: diesel::QuerySource + ?Sized,
+        QS: QuerySource + ?Sized,
         CE: AppearsOnTable<QS>
             + DynClone
             + Expression<SqlType = Nullable<Bool>>
@@ -155,8 +168,14 @@ impl<
 }
 
 impl<
-        QS: diesel::QuerySource + ?Sized,
-        CE: AppearsOnTable<QS> + DynClone + Expression<SqlType = NotSelectable> + QF + Send + Sync + 'static,
+        QS: QuerySource + ?Sized,
+        CE: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = (NotSelectable, NotSelectable)>
+            + QF
+            + Send
+            + Sync
+            + 'static,
     > ColumnOrderByExpression<QS> for CE
 {
 }
@@ -164,17 +183,17 @@ impl<
 impl PageCursor {
     pub fn on_column<QS, C>(self, column: C) -> DbPageCursor<QS>
     where
-        QS: diesel::query_source::QuerySource,
+        QS: QuerySource,
         C: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync,
         <C as Expression>::SqlType: SingleValue,
         NaiveDateTime: AsExpression<C::SqlType>,
 
-        helper_types::Gt<C, NaiveDateTime>: Expression,
-        helper_types::Lt<C, NaiveDateTime>: Expression,
-        helper_types::GtEq<C, NaiveDateTime>: Expression,
-        helper_types::LtEq<C, NaiveDateTime>: Expression,
+        Gt<C, NaiveDateTime>: Expression,
+        Lt<C, NaiveDateTime>: Expression,
+        GtEq<C, NaiveDateTime>: Expression,
+        LtEq<C, NaiveDateTime>: Expression,
 
-        diesel::dsl::Nullable<helper_types::Gt<C, NaiveDateTime>>: AppearsOnTable<QS>
+        dsl::Nullable<Gt<C, NaiveDateTime>>: AppearsOnTable<QS>
             + DynClone
             + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
@@ -182,7 +201,7 @@ impl PageCursor {
             + Sync
             + ValidGrouping<(), IsAggregate = No>
             + 'static,
-        diesel::dsl::Nullable<helper_types::GtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+        dsl::Nullable<GtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
             + DynClone
             + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
@@ -190,7 +209,7 @@ impl PageCursor {
             + Sync
             + ValidGrouping<(), IsAggregate = No>
             + 'static,
-        diesel::dsl::Nullable<helper_types::Lt<C, NaiveDateTime>>: AppearsOnTable<QS>
+        dsl::Nullable<Lt<C, NaiveDateTime>>: AppearsOnTable<QS>
             + DynClone
             + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
@@ -198,7 +217,7 @@ impl PageCursor {
             + Sync
             + ValidGrouping<(), IsAggregate = No>
             + 'static,
-        diesel::dsl::Nullable<helper_types::LtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+        dsl::Nullable<LtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
             + DynClone
             + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
@@ -212,37 +231,247 @@ impl PageCursor {
         DbPageCursor {
             count: self.count as i64,
             id: Uuid::new_v4(),
-            column_name: C::NAME,
-            column_cursor_comparison_expression: match (is_comparator_inclusive, self.direction) {
-                (false, CursorDirection::Following) => Box::new(column.clone().gt(self.cursor).nullable()),
-                (false, CursorDirection::Preceding) => Box::new(column.clone().lt(self.cursor).nullable()),
-                (true, CursorDirection::Following) => Box::new(column.clone().ge(self.cursor).nullable()),
-                (true, CursorDirection::Preceding) => Box::new(column.clone().le(self.cursor).nullable()),
-            },
-            column_order_by_expression: match self.direction {
-                CursorDirection::Following => Box::new(column.asc()),
-                CursorDirection::Preceding => Box::new(column.desc()),
-            },
             direction: self.direction,
             cursor: self.cursor,
             is_comparator_inclusive,
+            column: DbPageCursorColumn {
+                name: C::NAME,
+                cursor_comparison_expression: match (is_comparator_inclusive, self.direction) {
+                    (false, CursorDirection::Following) => Box::new(column.clone().gt(self.cursor).nullable()),
+                    (false, CursorDirection::Preceding) => Box::new(column.clone().lt(self.cursor).nullable()),
+                    (true, CursorDirection::Following) => Box::new(column.clone().ge(self.cursor).nullable()),
+                    (true, CursorDirection::Preceding) => Box::new(column.clone().le(self.cursor).nullable()),
+                },
+                order_by_expression: match self.direction {
+                    CursorDirection::Following => Box::new((column.clone().asc(), column.asc())),
+                    CursorDirection::Preceding => Box::new((column.clone().desc(), column.desc())),
+                },
+            },
+        }
+    }
+
+    pub fn on_columns<QS, C1, C2, N1, N2>(self, column1: C1, column2: C2) -> DbPageCursor<QS>
+    where
+        QS: QuerySource,
+        C1: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync,
+        C2: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync + 'static,
+        <C1 as Expression>::SqlType: SingleValue + SqlType<IsNull = N1>,
+        <C2 as Expression>::SqlType: SingleValue + SqlType<IsNull = N2>,
+        NaiveDateTime: AsExpression<C1::SqlType> + AsExpression<C2::SqlType>,
+        <NaiveDateTime as AsExpression<C2::SqlType>>::Expression: QF,
+
+        N1: OneIsNullable<N1>,
+        <N1 as OneIsNullable<N1>>::Out: MaybeNullableType<Bool>,
+        N2: OneIsNullable<N2>,
+        <N2 as OneIsNullable<N2>>::Out: MaybeNullableType<Bool>,
+
+        dsl::Nullable<Gt<C1, NaiveDateTime>>: Expression,
+        dsl::Nullable<Lt<C1, NaiveDateTime>>: Expression,
+        dsl::Nullable<GtEq<C1, NaiveDateTime>>: Expression,
+        dsl::Nullable<LtEq<C1, NaiveDateTime>>: Expression,
+
+        IsNotNull<C1>: Expression + BoolExpressionMethods,
+        <IsNotNull<C1> as Expression>::SqlType: SqlType,
+        <<<IsNotNull<C1> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<<IsNotNull<C1> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+
+        dsl::Nullable<Gt<C1, NaiveDateTime>>: AsExpression<Nullable<Bool>>,
+        <dsl::Nullable<Gt<C1, NaiveDateTime>> as Expression>::SqlType: SqlType,
+        <<<dsl::Nullable<Gt<C1, NaiveDateTime>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>>: Expression,
+        <And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType:
+            SqlType + BoolOrNullableBool,
+        <<And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull:
+            OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<And<
+            IsNotNull<C1>,
+            dsl::Nullable<Gt<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull: OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<
+            IsNotNull<C1>,
+            dsl::Nullable<Gt<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>>::Out: MaybeNullableType<Bool>,
+        dsl::Nullable<Or<
+            And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>>,
+            Gt<C2, NaiveDateTime>,
+            <<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out,
+        >>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+    + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+
+        dsl::Nullable<GtEq<C1, NaiveDateTime>>: AsExpression<Nullable<Bool>>,
+        <dsl::Nullable<GtEq<C1, NaiveDateTime>> as Expression>::SqlType: SqlType,
+        <<<dsl::Nullable<GtEq<C1, NaiveDateTime>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>>: Expression,
+        <And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType:
+            SqlType + BoolOrNullableBool,
+        <<And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull:
+            OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<And<
+            IsNotNull<C1>,
+            dsl::Nullable<GtEq<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull: OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<
+            IsNotNull<C1>,
+            dsl::Nullable<GtEq<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>>::Out: MaybeNullableType<Bool>,
+        dsl::Nullable<Or<
+            And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>>,
+            GtEq<C2, NaiveDateTime>,
+            <<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out,
+        >>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+    + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+
+        dsl::Nullable<Lt<C1, NaiveDateTime>>: AsExpression<Nullable<Bool>>,
+        <dsl::Nullable<Lt<C1, NaiveDateTime>> as Expression>::SqlType: SqlType,
+        <<<dsl::Nullable<Lt<C1, NaiveDateTime>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>>: Expression,
+        <And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType:
+            SqlType + BoolOrNullableBool,
+        <<And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull:
+            OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<And<
+            IsNotNull<C1>,
+            dsl::Nullable<Lt<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull: OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<
+            IsNotNull<C1>,
+            dsl::Nullable<Lt<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>>::Out: MaybeNullableType<Bool>,
+        dsl::Nullable<Or<
+            And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>>,
+            Lt<C2, NaiveDateTime>,
+            <<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out,
+        >>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+    + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+
+        dsl::Nullable<LtEq<C1, NaiveDateTime>>: AsExpression<Nullable<Bool>>,
+        <dsl::Nullable<LtEq<C1, NaiveDateTime>> as Expression>::SqlType: SqlType,
+        <<<dsl::Nullable<LtEq<C1, NaiveDateTime>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>>: Expression,
+        <And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType:
+            SqlType + BoolOrNullableBool,
+        <<And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull:
+            OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<And<
+            IsNotNull<C1>,
+            dsl::Nullable<LtEq<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull: OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<
+            IsNotNull<C1>,
+            dsl::Nullable<LtEq<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>>::Out: MaybeNullableType<Bool>,
+        dsl::Nullable<Or<
+            And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>>,
+            LtEq<C2, NaiveDateTime>,
+            <<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out,
+        >>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+    + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+    {
+        let is_comparator_inclusive = self.is_comparator_inclusive.unwrap_or_default();
+        DbPageCursor {
+            count: self.count as i64,
+            id: Uuid::new_v4(),
+            direction: self.direction,
+            cursor: self.cursor,
+            is_comparator_inclusive,
+            column: DbPageCursorColumn {
+                name: C1::NAME,
+                cursor_comparison_expression: match (is_comparator_inclusive, self.direction) {
+                    (false, CursorDirection::Following) => Box::new(
+                        column1
+                            .clone()
+                            .is_not_null()
+                            .and(column1.clone().gt(self.cursor).nullable())
+                            .or(column2.clone().gt(self.cursor))
+                            .nullable(),
+                    ),
+                    (false, CursorDirection::Preceding) => Box::new(
+                        column1
+                            .clone()
+                            .is_not_null()
+                            .and(column1.clone().lt(self.cursor).nullable())
+                            .or(column2.clone().lt(self.cursor))
+                            .nullable(),
+                    ),
+                    (true, CursorDirection::Following) => Box::new(
+                        column1
+                            .clone()
+                            .is_not_null()
+                            .and(column1.clone().ge(self.cursor).nullable())
+                            .or(column2.clone().ge(self.cursor))
+                            .nullable(),
+                    ),
+                    (true, CursorDirection::Preceding) => Box::new(
+                        column1
+                            .clone()
+                            .is_not_null()
+                            .and(column1.clone().le(self.cursor).nullable())
+                            .or(column2.clone().le(self.cursor))
+                            .nullable(),
+                    ),
+                },
+                order_by_expression: match self.direction {
+                    CursorDirection::Following => Box::new((column1.asc(), column2.asc())),
+                    CursorDirection::Preceding => Box::new((column1.desc(), column2.desc())),
+                },
+            },
         }
     }
 }
 
 impl<QS, C> From<(PageCursor, C)> for DbPageCursor<QS>
 where
-    QS: diesel::query_source::QuerySource,
+    QS: QuerySource,
     C: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync + ValidGrouping<(), IsAggregate = No> + 'static,
     <C as Expression>::SqlType: SingleValue,
     NaiveDateTime: AsExpression<C::SqlType>,
 
-    helper_types::Gt<C, NaiveDateTime>: Expression,
-    helper_types::Lt<C, NaiveDateTime>: Expression,
-    helper_types::GtEq<C, NaiveDateTime>: Expression,
-    helper_types::LtEq<C, NaiveDateTime>: Expression,
+    Gt<C, NaiveDateTime>: Expression,
+    Lt<C, NaiveDateTime>: Expression,
+    GtEq<C, NaiveDateTime>: Expression,
+    LtEq<C, NaiveDateTime>: Expression,
 
-    diesel::dsl::Nullable<helper_types::Gt<C, NaiveDateTime>>: AppearsOnTable<QS>
+    dsl::Nullable<Gt<C, NaiveDateTime>>: AppearsOnTable<QS>
         + DynClone
         + Expression<SqlType = Nullable<Bool>>
         + QF // see bottom of file for QF definition
@@ -250,7 +479,7 @@ where
         + Sync
         + ValidGrouping<(), IsAggregate = No>
         + 'static,
-    diesel::dsl::Nullable<helper_types::GtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+    dsl::Nullable<GtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
         + DynClone
         + Expression<SqlType = Nullable<Bool>>
         + QF // see bottom of file for QF definition
@@ -258,7 +487,7 @@ where
         + Sync
         + ValidGrouping<(), IsAggregate = No>
         + 'static,
-    diesel::dsl::Nullable<helper_types::Lt<C, NaiveDateTime>>: AppearsOnTable<QS>
+    dsl::Nullable<Lt<C, NaiveDateTime>>: AppearsOnTable<QS>
         + DynClone
         + Expression<SqlType = Nullable<Bool>>
         + QF // see bottom of file for QF definition
@@ -266,7 +495,7 @@ where
         + Sync
         + ValidGrouping<(), IsAggregate = No>
         + 'static,
-    diesel::dsl::Nullable<helper_types::LtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+    dsl::Nullable<LtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
         + DynClone
         + Expression<SqlType = Nullable<Bool>>
         + QF // see bottom of file for QF definition
@@ -277,12 +506,6 @@ where
 {
     fn from((value, column): (PageCursor, C)) -> Self {
         PageCursor::on_column(value, column)
-    }
-}
-
-impl<QS: ?Sized> DbPageCursor<QS> {
-    pub fn column_name(&self) -> &str {
-        self.column_name
     }
 }
 

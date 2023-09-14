@@ -16,12 +16,22 @@ pub use crate::paginate::offset::*;
 ))]
 pub(crate) use crate::paginate::graphql::*;
 
-use chrono::NaiveDateTime;
-use itertools::Itertools;
-use std::borrow::{Borrow, Cow};
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
-use uuid::Uuid;
+use ::chrono::NaiveDateTime;
+use ::diesel::dsl::{self, And, IsNotNull, Or};
+use ::diesel::expression::{is_aggregate::No, AsExpression, ValidGrouping};
+use ::diesel::helper_types::{Gt, GtEq, Lt, LtEq};
+use ::diesel::sql_types::is_nullable::{IsNullable, NotNull};
+use ::diesel::sql_types::BoolOrNullableBool;
+use ::diesel::sql_types::MaybeNullableType;
+use ::diesel::sql_types::OneIsNullable;
+use ::diesel::sql_types::{Bool, Nullable, SingleValue, SqlType};
+use ::diesel::{AppearsOnTable, BoolExpressionMethods, Column, Expression, QuerySource};
+use ::dyn_clone::DynClone;
+use ::itertools::Itertools;
+use ::std::borrow::{Borrow, Cow};
+use ::std::cmp::Ordering;
+use ::std::collections::{BTreeMap, HashMap};
+use ::uuid::Uuid;
 
 #[cfg(feature = "async-graphql-4")]
 use async_graphql_4 as async_graphql;
@@ -220,48 +230,47 @@ pub fn split_multipaginated_results<T: ?Sized, R: Clone>(
 impl Page {
     pub fn on_column<QS, C>(self, column: C) -> DbPage<QS>
     where
-        QS: ::diesel::query_source::QuerySource,
-        C: ::diesel::AppearsOnTable<QS> + Clone + ::diesel::Column + QF + Send + Sync,
-        <C as ::diesel::expression::Expression>::SqlType: ::diesel::sql_types::SingleValue,
+        QS: QuerySource,
+        C: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync,
+        <C as Expression>::SqlType: SingleValue,
+        NaiveDateTime: AsExpression<C::SqlType>,
 
-        NaiveDateTime: ::diesel::expression::AsExpression<C::SqlType>,
+        Gt<C, NaiveDateTime>: Expression,
+        Lt<C, NaiveDateTime>: Expression,
+        GtEq<C, NaiveDateTime>: Expression,
+        LtEq<C, NaiveDateTime>: Expression,
 
-        ::diesel::helper_types::Gt<C, NaiveDateTime>: ::diesel::expression::Expression,
-        ::diesel::helper_types::Lt<C, NaiveDateTime>: ::diesel::expression::Expression,
-        ::diesel::helper_types::GtEq<C, NaiveDateTime>: ::diesel::expression::Expression,
-        ::diesel::helper_types::LtEq<C, NaiveDateTime>: ::diesel::expression::Expression,
-
-        ::diesel::dsl::Nullable<::diesel::helper_types::Gt<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
-            + dyn_clone::DynClone
-            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+        dsl::Nullable<Gt<C, NaiveDateTime>>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
             + Send
             + Sync
-            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + ValidGrouping<(), IsAggregate = No>
             + 'static,
-        ::diesel::dsl::Nullable<::diesel::helper_types::GtEq<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
-            + dyn_clone::DynClone
-            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+        dsl::Nullable<GtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
             + Send
             + Sync
-            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + ValidGrouping<(), IsAggregate = No>
             + 'static,
-        ::diesel::dsl::Nullable<::diesel::helper_types::Lt<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
-            + dyn_clone::DynClone
-            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+        dsl::Nullable<Lt<C, NaiveDateTime>>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
             + Send
             + Sync
-            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + ValidGrouping<(), IsAggregate = No>
             + 'static,
-        ::diesel::dsl::Nullable<::diesel::helper_types::LtEq<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
-            + dyn_clone::DynClone
-            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+        dsl::Nullable<LtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
             + Send
             + Sync
-            + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
+            + ValidGrouping<(), IsAggregate = No>
             + 'static,
     {
         match self {
@@ -270,45 +279,208 @@ impl Page {
         }
     }
 
+    pub fn on_columns<QS, C1, C2, N1, N2>(self, column1: C1, column2: C2) -> DbPage<QS>
+    where
+        QS: QuerySource,
+        C1: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync,
+        C2: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync + 'static,
+        <C1 as Expression>::SqlType: SingleValue + SqlType<IsNull = N1>,
+        <C2 as Expression>::SqlType: SingleValue + SqlType<IsNull = N2>,
+        NaiveDateTime: AsExpression<C1::SqlType> + AsExpression<C2::SqlType>,
+        <NaiveDateTime as AsExpression<C2::SqlType>>::Expression: QF,
+
+        N1: OneIsNullable<N1>,
+        <N1 as OneIsNullable<N1>>::Out: MaybeNullableType<Bool>,
+        N2: OneIsNullable<N2>,
+        <N2 as OneIsNullable<N2>>::Out: MaybeNullableType<Bool>,
+
+        dsl::Nullable<Gt<C1, NaiveDateTime>>: Expression,
+        dsl::Nullable<Lt<C1, NaiveDateTime>>: Expression,
+        dsl::Nullable<GtEq<C1, NaiveDateTime>>: Expression,
+        dsl::Nullable<LtEq<C1, NaiveDateTime>>: Expression,
+
+        IsNotNull<C1>: Expression + BoolExpressionMethods,
+        <IsNotNull<C1> as Expression>::SqlType: SqlType,
+        <<<IsNotNull<C1> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<<IsNotNull<C1> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+
+        dsl::Nullable<Gt<C1, NaiveDateTime>>: AsExpression<Nullable<Bool>>,
+        <dsl::Nullable<Gt<C1, NaiveDateTime>> as Expression>::SqlType: SqlType,
+        <<<dsl::Nullable<Gt<C1, NaiveDateTime>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>>: Expression,
+        <And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType:
+            SqlType + BoolOrNullableBool,
+        <<And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull:
+            OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<And<
+            IsNotNull<C1>,
+            dsl::Nullable<Gt<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull: OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<
+            IsNotNull<C1>,
+            dsl::Nullable<Gt<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>>::Out: MaybeNullableType<Bool>,
+        dsl::Nullable<Or<
+            And<IsNotNull<C1>, dsl::Nullable<Gt<C1, NaiveDateTime>>, Nullable<Bool>>,
+            Gt<C2, NaiveDateTime>,
+            <<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out,
+        >>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+    + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+
+        dsl::Nullable<GtEq<C1, NaiveDateTime>>: AsExpression<Nullable<Bool>>,
+        <dsl::Nullable<GtEq<C1, NaiveDateTime>> as Expression>::SqlType: SqlType,
+        <<<dsl::Nullable<GtEq<C1, NaiveDateTime>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>>: Expression,
+        <And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType:
+            SqlType + BoolOrNullableBool,
+        <<And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull:
+            OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<And<
+            IsNotNull<C1>,
+            dsl::Nullable<GtEq<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull: OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<
+            IsNotNull<C1>,
+            dsl::Nullable<GtEq<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>>::Out: MaybeNullableType<Bool>,
+        dsl::Nullable<Or<
+            And<IsNotNull<C1>, dsl::Nullable<GtEq<C1, NaiveDateTime>>, Nullable<Bool>>,
+            GtEq<C2, NaiveDateTime>,
+            <<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out,
+        >>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+    + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+
+        dsl::Nullable<Lt<C1, NaiveDateTime>>: AsExpression<Nullable<Bool>>,
+        <dsl::Nullable<Lt<C1, NaiveDateTime>> as Expression>::SqlType: SqlType,
+        <<<dsl::Nullable<Lt<C1, NaiveDateTime>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>>: Expression,
+        <And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType:
+            SqlType + BoolOrNullableBool,
+        <<And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull:
+            OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<And<
+            IsNotNull<C1>,
+            dsl::Nullable<Lt<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull: OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<
+            IsNotNull<C1>,
+            dsl::Nullable<Lt<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>>::Out: MaybeNullableType<Bool>,
+        dsl::Nullable<Or<
+            And<IsNotNull<C1>, dsl::Nullable<Lt<C1, NaiveDateTime>>, Nullable<Bool>>,
+            Lt<C2, NaiveDateTime>,
+            <<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out,
+        >>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+    + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+
+        dsl::Nullable<LtEq<C1, NaiveDateTime>>: AsExpression<Nullable<Bool>>,
+        <dsl::Nullable<LtEq<C1, NaiveDateTime>> as Expression>::SqlType: SqlType,
+        <<<dsl::Nullable<LtEq<C1, NaiveDateTime>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>>: Expression,
+        <And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType:
+            SqlType + BoolOrNullableBool,
+        <<And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull:
+            OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<IsNullable>>::Out: MaybeNullableType<Bool>,
+        <<<And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>> as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<NotNull>>::Out: MaybeNullableType<Bool>,
+        <<And<
+            IsNotNull<C1>,
+            dsl::Nullable<LtEq<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull: OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>,
+        <<<And<
+            IsNotNull<C1>,
+            dsl::Nullable<LtEq<C1, NaiveDateTime>>,
+            Nullable<Bool>,
+        > as Expression>::SqlType as SqlType>::IsNull as OneIsNullable<<<<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out as SqlType>::IsNull>>::Out: MaybeNullableType<Bool>,
+        dsl::Nullable<Or<
+            And<IsNotNull<C1>, dsl::Nullable<LtEq<C1, NaiveDateTime>>, Nullable<Bool>>,
+            LtEq<C2, NaiveDateTime>,
+            <<N2 as OneIsNullable<N2>>::Out as MaybeNullableType<Bool>>::Out,
+        >>: AppearsOnTable<QS>
+            + DynClone
+            + Expression<SqlType = Nullable<Bool>>
+    + QF // see bottom of file for QF definition
+            + Send
+            + Sync
+            + ValidGrouping<(), IsAggregate = No>
+            + 'static,
+    {
+        match self {
+            Self::Cursor(cursor) => DbPage::Cursor(cursor.on_columns::<QS, C1, C2, N1, N2>(column1, column2)),
+            Self::Offset(offset) => DbPage::Offset(offset.into()),
+        }
+    }
+
     pub fn map_on_column<QS, C>(column: C) -> impl (Fn(Self) -> DbPage<QS>) + 'static
     where
-        QS: ::diesel::query_source::QuerySource,
-        C: ::diesel::AppearsOnTable<QS> + Clone + ::diesel::Column + QF + Send + Sync,
-        <C as ::diesel::expression::Expression>::SqlType: ::diesel::sql_types::SingleValue,
+        QS: QuerySource,
+        C: AppearsOnTable<QS> + Clone + Column + QF + Send + Sync,
+        <C as Expression>::SqlType: SingleValue,
 
-        NaiveDateTime: ::diesel::expression::AsExpression<C::SqlType>,
+        NaiveDateTime: AsExpression<C::SqlType>,
 
-        ::diesel::helper_types::Gt<C, NaiveDateTime>: ::diesel::expression::Expression,
-        ::diesel::helper_types::Lt<C, NaiveDateTime>: ::diesel::expression::Expression,
-        ::diesel::helper_types::GtEq<C, NaiveDateTime>: ::diesel::expression::Expression,
-        ::diesel::helper_types::LtEq<C, NaiveDateTime>: ::diesel::expression::Expression,
-        ::diesel::dsl::Nullable<::diesel::helper_types::Gt<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+        Gt<C, NaiveDateTime>: Expression,
+        Lt<C, NaiveDateTime>: Expression,
+        GtEq<C, NaiveDateTime>: Expression,
+        LtEq<C, NaiveDateTime>: Expression,
+        dsl::Nullable<Gt<C, NaiveDateTime>>: AppearsOnTable<QS>
             + dyn_clone::DynClone
-            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
             + Send
             + Sync
             + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
             + 'static,
-        ::diesel::dsl::Nullable<::diesel::helper_types::GtEq<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+        dsl::Nullable<GtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
             + dyn_clone::DynClone
-            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
             + Send
             + Sync
             + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
             + 'static,
-        ::diesel::dsl::Nullable<::diesel::helper_types::Lt<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+        dsl::Nullable<Lt<C, NaiveDateTime>>: AppearsOnTable<QS>
             + dyn_clone::DynClone
-            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
             + Send
             + Sync
             + ::diesel::expression::ValidGrouping<(), IsAggregate = ::diesel::expression::is_aggregate::No>
             + 'static,
-        ::diesel::dsl::Nullable<::diesel::helper_types::LtEq<C, NaiveDateTime>>: ::diesel::AppearsOnTable<QS>
+        dsl::Nullable<LtEq<C, NaiveDateTime>>: AppearsOnTable<QS>
             + dyn_clone::DynClone
-            + ::diesel::expression::Expression<SqlType = ::diesel::sql_types::Nullable<::diesel::sql_types::Bool>>
+            + Expression<SqlType = Nullable<Bool>>
             + QF // see bottom of file for QF definition
             + Send
             + Sync

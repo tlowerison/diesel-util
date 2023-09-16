@@ -21,6 +21,7 @@ futures.workspace = true
 itertools.workspace = true
 lazy_static.workspace = true
 once_cell.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 scoped-futures.workspace = true

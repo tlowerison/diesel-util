@@ -41,7 +41,7 @@ use async_graphql_5 as async_graphql;
 use async_graphql_6 as async_graphql;
 
 #[derive(
-    AsVariant, AsVariantMut, Clone, Copy, Debug, Deserialize, Eq, Hash, IsVariant, Ord, PartialEq, PartialOrd, Serialize,
+    AsVariant, AsVariantMut, Clone, Copy, Debug, Deserialize, Eq, Hash, IsVariant, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[cfg_attr(
     any(

@@ -5,6 +5,7 @@ members = [
   "proc-macros",
 ]
 exclude = []
+resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
@@ -41,6 +42,7 @@ paste = "1"
 proc-macro2 = "1"
 proc-macro-util = { git = "https://github.com/tlowerison/proc-macro-util", rev = "b93d2c5" }
 quote = "1"
+schemars = { version = "0", features = ["chrono"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 scoped-futures = "^0.1"

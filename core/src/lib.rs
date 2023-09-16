@@ -35,6 +35,8 @@ extern crate derivative;
 #[macro_use]
 extern crate derive_more;
 #[macro_use]
+extern crate schemars;
+#[macro_use]
 extern crate serde;
 
 cfg_if! {

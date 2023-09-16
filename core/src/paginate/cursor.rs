@@ -23,7 +23,7 @@ use async_graphql_5 as async_graphql;
 #[cfg(feature = "async-graphql-6")]
 use async_graphql_6 as async_graphql;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[cfg_attr(
     any(
         feature = "async-graphql-4",
@@ -74,7 +74,7 @@ impl PartialOrd for PageCursor {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(
     any(
         feature = "async-graphql-4",

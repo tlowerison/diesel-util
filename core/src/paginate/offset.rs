@@ -9,7 +9,7 @@ use async_graphql_5 as async_graphql;
 #[cfg(feature = "async-graphql-6")]
 use async_graphql_6 as async_graphql;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[cfg_attr(
     any(
         feature = "async-graphql-4",
@@ -31,7 +31,7 @@ pub struct PageOffset {
     pub index: u32,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 pub struct DbPageOffset {
     pub left: i64,
     pub right: i64,

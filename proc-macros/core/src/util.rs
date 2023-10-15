@@ -1,8 +1,7 @@
-use std::str::FromStr;
-
-use proc_macro2::{TokenStream, TokenTree};
-use syn::parse::{Error, Parse, ParseStream};
-use syn::{DeriveInput, Ident, Path, Token};
+use ::proc_macro2::{TokenStream, TokenTree};
+use ::std::str::FromStr;
+use ::syn::parse::{Error, Parse, ParseStream};
+use ::syn::{DeriveInput, Ident, Path, Token};
 
 #[derive(Clone, Default, Debug)]
 pub struct DieselAttribute {

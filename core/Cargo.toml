@@ -20,8 +20,8 @@ either.workspace = true
 futures.workspace = true
 itertools.workspace = true
 lazy_static.workspace = true
+page-util.workspace = true
 once_cell.workspace = true
-schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 scoped-futures.workspace = true
@@ -30,24 +30,18 @@ tokio.workspace = true
 uuid.workspace = true
 
 anyhow = { workspace = true, optional = true }
-async-graphql-4 = { workspace = true, optional = true }
-async-graphql-5 = { workspace = true, optional = true }
-async-graphql-6 = { workspace = true, optional = true }
 color-eyre = { workspace = true, optional = true }
 mobc = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
 [features]
 anyhow = ["dep:anyhow"]
-async-graphql-4 = ["dep:async-graphql-4"]
-async-graphql-5 = ["dep:async-graphql-5"]
-async-graphql-6 = ["dep:async-graphql-6"]
 color-eyre = ["dep:color-eyre"]
 bb8 = ["diesel-async/bb8"]
 deadpool = ["diesel-async/deadpool"]
 mobc = ["diesel-async/mobc", "dep:mobc"]
-mysql = ["diesel/mysql", "diesel-async/mysql"]
-postgres = ["diesel/postgres", "diesel-async/postgres"]
+mysql = ["diesel/mysql", "diesel-async/mysql", "page-util/mysql"]
+postgres = ["diesel/postgres", "diesel-async/postgres", "page-util/postgres"]
 tracing = ["dep:tracing"]
 tracing-args = ["tracing"]
 tracing-full = ["tracing", "tracing-args", "tracing-ret"]

@@ -65,7 +65,7 @@ pub fn derive_soft_delete(tokens: TokenStream) -> Result<TokenStream, Error> {
     let table_name = diesel_attribute.table_name.ok_or_else(|| {
         Error::new_spanned(
             diesel_attr,
-            "Audit was unable to extract table_name from a diesel(table_name = `...`) attribute",
+            "SoftDelete was unable to extract table_name from a diesel(table_name = `...`) attribute",
         )
     })?;
     let deleted_at_column_name = soft_delete_attribute

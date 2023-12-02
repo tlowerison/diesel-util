@@ -878,7 +878,7 @@ pub trait DbDelete: DbEntity {
         all(feature = "tracing", feature = "tracing-args", feature = "tracing-ret"),
         instrument(err(Debug), fields(Self = std::any::type_name::<Self>()), skip(db), ret)
     )]
-    async fn delete_one<'query, 'v, D, I>(
+    async fn delete_one<'query, 'v, D>(
         db: &D,
         id: Self::Id,
     ) -> Result<Self, DbEntityError<<Self::Raw as TryInto<Self>>::Error>>
